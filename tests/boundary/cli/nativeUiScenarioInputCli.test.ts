@@ -71,4 +71,30 @@ describe("native UI scenario CLI input", () => {
       });
     },
   );
+
+  cliTest(
+    "refuses scenario steps for passive observation instead of dropping them",
+    async ({ cli }) => {
+      // The passive observation contract has no steps, so accepting the flag
+      // here would silently run a plain observation for a caller that asked
+      // for actions.
+      const result = await cli.run({
+        arguments: [
+          "observe-native-ui",
+          "/provider-must-not-be-invoked",
+          "--pid",
+          "1",
+          "--window-id",
+          "1",
+          "--steps",
+          '[{"kind":"click","path":[0]}]',
+          "--json",
+        ],
+        environment: { REA_LOG_LEVEL: "silent" },
+      });
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.json).toMatchObject({ code: "UNKNOWN" });
+    },
+  );
 });

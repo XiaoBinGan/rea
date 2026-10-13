@@ -32,84 +32,100 @@ export const registerUtilityCommands = (
   registerCapabilityCommands(cli, logger, analysis);
   registerNativeCommands(cli, logger, runProviderAnalysis);
   registerNativeCallCommands(cli, logger, runProviderAnalysis);
-  for (const [command, operation] of [
+  // Passive observation and active scenarios bind the same window but do not
+  // accept the same inputs: the observation contract has no steps, so only the
+  // scenario command declares them.
+  const nativeUiWindowOptions = z.object({
+    pid: z.number().int().positive().describe("Existing application PID"),
+    windowId: z
+      .number()
+      .int()
+      .positive()
+      .describe("Exact selected application window ID"),
+    screenshot: z
+      .boolean()
+      .default(true)
+      .describe("Capture only the selected window"),
+    accessibility: z
+      .boolean()
+      .default(true)
+      .describe("Read the selected window accessibility tree"),
+    maxNodes: z
+      .number()
+      .int()
+      .positive()
+      .safe()
+      .default(500)
+      .describe("Maximum accessibility nodes per capture"),
+  });
+  const nativeUiOperations = [
     [CLI_COMMANDS.observeNativeUi, "observe_native_ui"],
     [CLI_COMMANDS.captureNativeUiScenario, "capture_native_ui_scenario"],
-  ] as const) {
+  ] as const;
+  const runNativeUi = (
+    command: string,
+    operation: (typeof nativeUiOperations)[number][1],
+    path: string,
+    options: {
+      readonly pid: number;
+      readonly windowId: number;
+      readonly screenshot: boolean;
+      readonly accessibility: boolean;
+      readonly maxNodes: number;
+      readonly steps?: string | undefined;
+    },
+  ) =>
+    logCliCommand(logger, command, async () => {
+      const parameters = {
+        pid: options.pid,
+        window_id: options.windowId,
+        screenshot: options.screenshot,
+        accessibility: options.accessibility,
+        max_nodes: options.maxNodes,
+      };
+      if (operation === "capture_native_ui_scenario") {
+        const decoded =
+          options.steps === undefined
+            ? { ok: true as const, value: undefined }
+            : safeParseJson(options.steps);
+        if (!decoded.ok)
+          return invalidNativeUiScenarioInput(operation, [
+            { path: ["steps"], reason: "invalid_format", expected: "JSON" },
+          ]);
+        const parsed = nativeUiScenarioInputSchema.safeParse({
+          ...parameters,
+          steps: decoded.value,
+        });
+        if (!parsed.success)
+          return invalidNativeUiScenarioInput(
+            operation,
+            projectInputIssues(parsed.error.issues, {
+              ...parameters,
+              ...(options.steps === undefined ? {} : { steps: decoded.value }),
+            }),
+          );
+        return runProviderAnalysis(path, operation, parsed.data, logger);
+      }
+      return runProviderAnalysis(path, operation, parameters, logger);
+    });
+  for (const [command, operation] of nativeUiOperations) {
     cli.command(command, {
       description:
         "Observe or run a scenario in one exact native application window",
       args: z.object({
         path: z.string().describe("Local native executable or app path"),
       }),
-      options: z.object({
-        pid: z.number().int().positive().describe("Existing application PID"),
-        windowId: z
-          .number()
-          .int()
-          .positive()
-          .describe("Exact selected application window ID"),
-        steps: z
-          .string()
-          .optional()
-          .describe("JSON array of declarative AX actions or waits"),
-        screenshot: z
-          .boolean()
-          .default(true)
-          .describe("Capture only the selected window"),
-        accessibility: z
-          .boolean()
-          .default(true)
-          .describe("Read the selected window accessibility tree"),
-        maxNodes: z
-          .number()
-          .int()
-          .positive()
-          .safe()
-          .default(500)
-          .describe("Maximum accessibility nodes per capture"),
-      }),
+      options:
+        operation === "capture_native_ui_scenario"
+          ? nativeUiWindowOptions.extend({
+              steps: z
+                .string()
+                .optional()
+                .describe("JSON array of declarative AX actions or waits"),
+            })
+          : nativeUiWindowOptions,
       run: ({ args, options }) =>
-        logCliCommand(logger, command, async () => {
-          const parameters = {
-            pid: options.pid,
-            window_id: options.windowId,
-            screenshot: options.screenshot,
-            accessibility: options.accessibility,
-            max_nodes: options.maxNodes,
-          };
-          if (operation === "capture_native_ui_scenario") {
-            const decoded =
-              options.steps === undefined
-                ? { ok: true as const, value: undefined }
-                : safeParseJson(options.steps);
-            if (!decoded.ok)
-              return invalidNativeUiScenarioInput(operation, [
-                { path: ["steps"], reason: "invalid_format", expected: "JSON" },
-              ]);
-            const parsed = nativeUiScenarioInputSchema.safeParse({
-              ...parameters,
-              steps: decoded.value,
-            });
-            if (!parsed.success)
-              return invalidNativeUiScenarioInput(
-                operation,
-                projectInputIssues(parsed.error.issues, {
-                  ...parameters,
-                  ...(options.steps === undefined
-                    ? {}
-                    : { steps: decoded.value }),
-                }),
-              );
-            return runProviderAnalysis(
-              args.path,
-              operation,
-              parsed.data,
-              logger,
-            );
-          }
-          return runProviderAnalysis(args.path, operation, parameters, logger);
-        }),
+        runNativeUi(command, operation, args.path, options),
     });
   }
   registerReferenceSourceCommand(cli, logger, environment);
