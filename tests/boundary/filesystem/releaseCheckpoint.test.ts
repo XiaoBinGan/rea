@@ -637,6 +637,27 @@ it("rejects a candidate from a different source even when versions and notes mat
   });
 });
 
+/**
+ * A release job either declares its own steps or calls a reusable workflow.
+ * `qualification` calls the CI workflow, so demanding steps on every job
+ * rejects the real workflow instead of the shape it actually declares.
+ */
+const releaseJobSchema = z
+  .object({
+    steps: z
+      .array(
+        z.object({
+          name: z.string().optional(),
+          run: z.string().optional(),
+        }),
+      )
+      .optional(),
+    uses: z.string().min(1).optional(),
+  })
+  .refine((job) => (job.steps === undefined) !== (job.uses === undefined), {
+    message: "A release job declares either steps or a reusable workflow.",
+  });
+
 it.skipIf(process.platform === "win32").each([
   { job: "release-please", valid: true },
   { job: "release-please", valid: false },
@@ -648,19 +669,7 @@ it.skipIf(process.platform === "win32").each([
     const f = await fixture();
     const sourceSha = await candidate(f, valid ? "6.0.0" : "5.1.0");
     const workflow = z
-      .object({
-        jobs: z.record(
-          z.string(),
-          z.object({
-            steps: z.array(
-              z.object({
-                name: z.string().optional(),
-                run: z.string().optional(),
-              }),
-            ),
-          }),
-        ),
-      })
+      .object({ jobs: z.record(z.string(), releaseJobSchema) })
       .parse(
         parse(
           await readFile(
@@ -672,7 +681,7 @@ it.skipIf(process.platform === "win32").each([
     const command = z
       .string()
       .parse(
-        workflow.jobs[job]?.steps.find(
+        workflow.jobs[job]?.steps?.find(
           (step) =>
             step.name ===
             (job === "merged-release"
