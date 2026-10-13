@@ -6,7 +6,11 @@ import { createApktoolResourceAnalysisProvider } from "../composition/apktool.js
 import { CLI_COMMANDS } from "../cliCommandNames.js";
 import { logCliCommand } from "../cliLogging.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
-import type { ApktoolOperation } from "../domain/apktool/apktoolResourceAnalysis.js";
+import {
+  APKTOOL_LOCALE_MESSAGE,
+  APKTOOL_LOCALE_PATTERN,
+  type ApktoolOperation,
+} from "../domain/apktool/apktoolResourceAnalysis.js";
 import type { Logger } from "pino";
 import type { CliInstance } from "./types.js";
 import { withCommandCancellation } from "./commandCancellation.js";
@@ -54,23 +58,24 @@ export const registerApktoolCommands = (
         .string()
         .min(2)
         .max(16)
-        .regex(
-          /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/u,
-          "Locale must look like de or pt-BR",
-        )
+        .regex(APKTOOL_LOCALE_PATTERN, APKTOOL_LOCALE_MESSAGE)
         .optional()
         .describe(
           "Project strings from res/values-<locale> instead of the default",
         ),
-      "no-strings": z
+      // Declared positively so `--no-strings` is expressible: the parser
+      // resolves a `--no-<name>` token against the declared option names, and a
+      // literal `no-strings` option can only ever be reached as
+      // `--no-no-strings`, which also sets it false.
+      strings: z
         .boolean()
-        .default(false)
-        .describe("Skip projecting string resources"),
+        .default(true)
+        .describe("Project string resources; --no-strings skips them"),
     }),
     run: ({ args, options }) =>
       execute(CLI_COMMANDS.decodeAndroidResources, "decode_android_resources", {
         path: args.path,
-        include_strings: !options["no-strings"],
+        include_strings: options.strings,
         ...(options.locale === undefined ? {} : { locale: options.locale }),
       }),
   });

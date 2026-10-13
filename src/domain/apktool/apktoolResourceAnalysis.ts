@@ -9,6 +9,16 @@ const MAX_STRINGS = 2_000;
  * bring-your-own: REA never installs it, and decoding happens in a
  * provider-owned workspace that is removed after the facts are projected.
  */
+/**
+ * Locale tags apktool can project. The domain owns this constraint for every
+ * adapter: the CLI option is built with incur's own schema library, so it wraps
+ * these values instead of restating a second, narrower pattern.
+ */
+export const APKTOOL_LOCALE_PATTERN =
+  /^(?:[a-z]{2,3}(?:-(?:r?[A-Z]{2}|r?[0-9]{3}))?|b\+[a-z]{2,3}(?:\+[A-Za-z0-9]{2,8})*)$/u;
+export const APKTOOL_LOCALE_MESSAGE =
+  "Locale must look like de, pt-BR, pt-rBR, or b+zh+Hans+CN";
+
 export const apktoolInputSchemas = {
   inspect_apktool_client: z.strictObject({}),
   decode_android_resources: z.strictObject({
@@ -23,10 +33,7 @@ export const apktoolInputSchemas = {
       .string()
       .min(2)
       .max(16)
-      .regex(
-        /^(?:[a-z]{2,3}(?:-(?:r?[A-Z]{2}|r?[0-9]{3}))?|b\+[a-z]{2,3}(?:\+[A-Za-z0-9]{2,8})*)$/u,
-        "Locale must look like de, pt-BR, pt-rBR, or b+zh+Hans+CN",
-      )
+      .regex(APKTOOL_LOCALE_PATTERN, APKTOOL_LOCALE_MESSAGE)
       .optional()
       .describe(
         "Project strings from res/values-<locale>/strings.xml instead of the default table",
