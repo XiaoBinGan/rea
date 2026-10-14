@@ -172,6 +172,9 @@
         "!docs/verification/managed-conformance-*.json",
         ".agents/skills/reverse-engineer-anything/**",
         "README*.md",
+        "AGENTS.md",
+        ".github/pull_request_template.md",
+        "website/locales/languages.json",
         {
           "mode": "dependencyOutputs",
           "globs": [

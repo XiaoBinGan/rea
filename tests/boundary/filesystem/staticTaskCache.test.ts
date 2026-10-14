@@ -48,7 +48,19 @@ const writeTaskFixture = async (
       if (task === undefined) throw new Error(`Missing Turbo task ${name}`);
       // Measure each task's own input ownership without dependency hashes.
       const { dependsOn: _dependsOn, ...definition } = task;
-      return [name, definition];
+      // Deferred input modes resolve against dependency tasks, which this
+      // dependency-free fixture never runs, so Turbo rejects them outright.
+      // Drop them; the static inputs still exercise the task's own hash.
+      const { inputs, ...rest } = definition;
+      return [
+        name,
+        Array.isArray(inputs)
+          ? {
+              ...rest,
+              inputs: inputs.filter((input) => typeof input === "string"),
+            }
+          : definition,
+      ];
     }),
   );
   await writeFile(
@@ -611,4 +623,53 @@ it("invalidates checker task hashes for Node, ignore, and VitePress config chang
       taskHash(root, task, cache),
       `${task} must ignore vitest.config.ts`,
     ).toBe(initial.get(task));
+});
+
+it("invalidates docs:check:built task hashes for every file it reads and asserts", async () => {
+  const root = await createTestTempDirectory("rea-docs-check-cache-inputs-");
+  const cache = await createTestTempDirectory("rea-docs-check-cache-hashes-");
+  await mkdir(join(root, ".github"), { recursive: true });
+  await mkdir(join(root, "website/locales"), { recursive: true });
+  await writeTaskFixture(root, ["docs:check:built"], {
+    // This fixture probes only Turbo's real task hash; the checker chain is
+    // intentionally inert so the hash test cannot invoke the docs gate.
+    "docs:check:built": 'node -e "process.exit(0)"',
+  });
+  await writeFile(join(root, "AGENTS.md"), "# Agents\n");
+  await writeFile(
+    join(root, ".github/pull_request_template.md"),
+    "# Template\n",
+  );
+  await writeFile(join(root, "website/locales/languages.json"), "[]\n");
+
+  const initial = taskHash(root, "docs:check:built", cache);
+  expect(taskHash(root, "docs:check:built", cache)).toBe(initial);
+
+  const edits: Array<[string, string]> = [
+    [
+      "AGENTS.md",
+      "# Agents\nChange the product catalog reference the check asserts.\n",
+    ],
+    [
+      ".github/pull_request_template.md",
+      "# Template\nChange the product catalog reference the check asserts.\n",
+    ],
+    [
+      "website/locales/languages.json",
+      '[{"readme":"docs/readme/README_zh.md","code":"zh"}]\n',
+    ],
+  ];
+  for (const [path, content] of edits) {
+    const previous = await readFile(join(root, path), "utf8");
+    await writeFile(join(root, path), content);
+    expect(
+      taskHash(root, "docs:check:built", cache),
+      `docs:check:built must hash ${path}`,
+    ).not.toBe(initial);
+    await writeFile(join(root, path), previous);
+    expect(
+      taskHash(root, "docs:check:built", cache),
+      `docs:check:built must restore its hash after ${path}`,
+    ).toBe(initial);
+  }
 });
