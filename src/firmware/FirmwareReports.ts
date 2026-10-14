@@ -53,14 +53,44 @@ const multiFile = z.object({
 });
 const hashes = z.object({ sha256: digestSchema });
 /**
- * The provider's structured missing-dependency report. Non-strict on purpose:
- * unfamiliar extra fields stay in retained diagnostics, only the dependency
- * names are derived here.
+ * The one owner of unblob's `ExtractorDependencyNotFoundReport` fact. The
+ * dependency rows and the retained extraction diagnostics both read this parse,
+ * so a second interpretation cannot disagree about the same produced report.
+ * Non-strict on purpose: unfamiliar extra fields stay in retained diagnostics,
+ * only the dependency names are derived here.
  */
-const missingDependency = z.object({
+const dependencyReport = z.object({
   __typename__: z.literal("ExtractorDependencyNotFoundReport"),
   dependencies: z.array(z.string()),
 });
+type DependencyFacts = {
+  readonly names: Set<string>;
+  unnamed: boolean;
+};
+const emptyDependencyFacts = (): DependencyFacts => ({
+  names: new Set<string>(),
+  unnamed: false,
+});
+const mergeDependencyFacts = (
+  target: DependencyFacts,
+  reported: DependencyFacts,
+): DependencyFacts => {
+  for (const name of reported.names) target.names.add(name);
+  target.unnamed ||= reported.unnamed;
+  return target;
+};
+/**
+ * Read one producer dependency report. Blank entries are not names: they are
+ * filtered here, once, and can never remove a real name. A report whose entries
+ * are all blank keeps its omission as an explicit unnamed failure instead of
+ * looking like an accepted non-failure.
+ */
+const dependencyReportFacts = (value: unknown): DependencyFacts | null => {
+  const parsed = dependencyReport.safeParse(value);
+  if (!parsed.success) return null;
+  const names = new Set(parsed.data.dependencies.filter((name) => name !== ""));
+  return { names, unnamed: names.size === 0 };
+};
 const region = z.object({
   id: z.string(),
   start_offset: integer,
@@ -82,37 +112,35 @@ const known = new Set([
   "MultiFileReport",
 ]);
 
-const dependencyFailure = z.object({
-  __typename__: z.literal("ExtractorDependencyNotFoundReport"),
-  dependencies: z.array(z.string().min(1)).min(1),
-});
-
-/** Collect the named extractors from any dependency report nested in one value. */
-const missingDependencies = (value: unknown): string[] => {
-  // Producer-controlled name volume must not make deduplication quadratic;
-  // a Set keeps collection linear and uniqueSorted restores canonical order.
-  const found = new Set<string>();
+/**
+ * Collect the missing-dependency facts from any dependency report nested in one
+ * value. Producer-controlled name volume must not make deduplication quadratic;
+ * a Set keeps collection linear and the consumer restores canonical order.
+ */
+const missingDependencies = (value: unknown): DependencyFacts | null => {
+  let facts: DependencyFacts | null = null;
   const visit = (node: unknown): void => {
+    const reported = dependencyReportFacts(node);
+    if (reported !== null) {
+      facts = mergeDependencyFacts(facts ?? emptyDependencyFacts(), reported);
+      return;
+    }
     if (Array.isArray(node)) {
       for (const item of node) visit(item);
       return;
     }
     if (typeof node !== "object" || node === null) return;
-    const failure = dependencyFailure.safeParse(node);
-    if (failure.success) {
-      for (const dependency of failure.data.dependencies) found.add(dependency);
-      return;
-    }
     for (const child of Object.values(node)) visit(child);
   };
   visit(value);
-  return [...found];
+  return facts;
 };
 
 /**
  * Name the missing extractors and the producing stage for one extraction
  * problem so a caller can act without decoding the raw report. The original
- * report stays retained alongside the normalized fields.
+ * report stays retained alongside the normalized fields. A report that named no
+ * extractor keeps an explicit empty list instead of losing the failure.
  */
 const extractionDiagnostic = (
   inputPath: string,
@@ -123,9 +151,9 @@ const extractionDiagnostic = (
   return {
     input_path: inputPath,
     ...(stage === null ? {} : { stage }),
-    ...(dependencies.length === 0
+    ...(dependencies === null
       ? {}
-      : { missing_dependencies: dependencies }),
+      : { missing_dependencies: uniqueSorted([...dependencies.names]) }),
     report,
   };
 };
@@ -238,29 +266,19 @@ export const normalizeUnblobReport = (
   }[] = [];
   const seen = new Set<string>();
   const taskFailures = new Set<string>();
-  type DependencyFacts = { readonly names: Set<string>; unnamed: boolean };
   const missingDependencies = new Map<string, DependencyFacts>();
   /** Dependencies reported by one chunk's extraction, keyed with its chunk id. */
   const chunkMissingDependencies = new Map<string, DependencyFacts>();
   const dependencyNames = (
     reports: readonly unknown[],
   ): DependencyFacts | null => {
-    const names = new Set<string>();
-    let unnamed = false;
-    let reported = false;
+    let facts: DependencyFacts | null = null;
     for (const item of reports) {
-      const parsed = missingDependency.safeParse(item);
-      if (!parsed.success) continue;
-      reported = true;
-      if (
-        parsed.data.dependencies.length === 0 ||
-        parsed.data.dependencies.includes("")
-      )
-        unnamed = true;
-      for (const name of parsed.data.dependencies)
-        if (name !== "") names.add(name);
+      const reported = dependencyReportFacts(item);
+      if (reported !== null)
+        facts = mergeDependencyFacts(facts ?? emptyDependencyFacts(), reported);
     }
-    return reported ? { names, unnamed } : null;
+    return facts;
   };
   const dependencyRows = (
     facts: DependencyFacts,
@@ -274,33 +292,33 @@ export const normalizeUnblobReport = (
     path: string,
     reports: readonly unknown[],
   ): void => {
-    const names = dependencyNames(reports);
-    // null means no accepted failure; [] means a definite dependency failure
-    // whose executable identity the producer left unavailable.
-    if (names === null) return;
-    const known = missingDependencies.get(path) ?? {
-      names: new Set<string>(),
-      unnamed: false,
-    };
-    for (const name of names.names) known.names.add(name);
-    known.unnamed ||= names.unnamed;
-    missingDependencies.set(path, known);
+    const facts = dependencyNames(reports);
+    // null means no accepted failure; an unnamed fact means a definite
+    // dependency failure whose executable identity the producer left unavailable.
+    if (facts === null) return;
+    missingDependencies.set(
+      path,
+      mergeDependencyFacts(
+        missingDependencies.get(path) ?? emptyDependencyFacts(),
+        facts,
+      ),
+    );
   };
   const noteChunkMissingDependencies = (
     path: string,
     chunkId: string,
     reports: readonly unknown[],
   ): void => {
-    const names = dependencyNames(reports);
-    if (names === null) return;
+    const facts = dependencyNames(reports);
+    if (facts === null) return;
     const key = JSON.stringify([path, chunkId]);
-    const known = chunkMissingDependencies.get(key) ?? {
-      names: new Set<string>(),
-      unnamed: false,
-    };
-    for (const name of names.names) known.names.add(name);
-    known.unnamed ||= names.unnamed;
-    chunkMissingDependencies.set(key, known);
+    chunkMissingDependencies.set(
+      key,
+      mergeDependencyFacts(
+        chunkMissingDependencies.get(key) ?? emptyDependencyFacts(),
+        facts,
+      ),
+    );
   };
   for (const record of records) {
     const path = logical(record.task.path);

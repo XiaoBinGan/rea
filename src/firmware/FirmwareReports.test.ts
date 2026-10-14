@@ -344,6 +344,80 @@ describe("firmware dependency failures with unavailable identities", () => {
   });
 });
 
+describe("firmware dependency reports with blank entries", () => {
+  const normalizedChunkReport = (dependencies: readonly string[]) => {
+    const record = root();
+    return normalizeUnblobReport(
+      [
+        {
+          ...record,
+          reports: [
+            ...record.reports.filter(
+              (item) => item.__typename__ !== "UnknownChunkReport",
+            ),
+            {
+              ...nestedDependencyChunk("gzip-id", 0),
+              extraction_reports: [
+                {
+                  __typename__: "ExtractorDependencyNotFoundReport",
+                  severity: "ERROR",
+                  dependencies: [...dependencies],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      context,
+    );
+  };
+  it.each([{ dependencies: ["", "7z"] }, { dependencies: ["7z", ""] }])(
+    "keeps the named dependency beside a blank entry ($dependencies)",
+    ({ dependencies }) => {
+      const normalized = normalizedChunkReport(dependencies);
+      expect(normalized.missing_dependencies).toEqual([]);
+      expect(normalized.diagnostics).toEqual([
+        {
+          input_path: "$input",
+          stage: "handler-gzip-id",
+          missing_dependencies: ["7z"],
+          report: {
+            __typename__: "ExtractorDependencyNotFoundReport",
+            severity: "ERROR",
+            dependencies,
+          },
+        },
+      ]);
+      expect(normalized.chunk_missing_dependencies).toEqual([
+        {
+          input_path: "$input",
+          provider_id: "gzip-id",
+          dependencies: ["7z"],
+        },
+      ]);
+    },
+  );
+  it("reports a blanks-only dependency report as explicitly unnamed", () => {
+    const normalized = normalizedChunkReport(["", ""]);
+    expect(normalized.missing_dependencies).toEqual([]);
+    expect(normalized.chunk_missing_dependencies).toEqual([
+      { input_path: "$input", provider_id: "gzip-id", dependencies: [] },
+    ]);
+    expect(normalized.diagnostics).toEqual([
+      {
+        input_path: "$input",
+        stage: "handler-gzip-id",
+        missing_dependencies: [],
+        report: {
+          __typename__: "ExtractorDependencyNotFoundReport",
+          severity: "ERROR",
+          dependencies: ["", ""],
+        },
+      },
+    ]);
+  });
+});
+
 describe("firmware producer chunk failures", () => {
   it("marks chunks whose extraction reported problems", () => {
     const record = root();

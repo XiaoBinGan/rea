@@ -364,6 +364,44 @@ it("preserves an unnamed dependency failure on its owning chunk", async () => {
   ]);
 });
 
+it("keeps the named dependency beside a blank entry on its owning chunk", async () => {
+  const fixture = await firmwareFixture("blank-named-chunk-dependency");
+  const result = await fixture.service.execute("extract_firmware", {
+    path: fixture.path,
+    output_directory: fixture.output,
+  });
+  if (!result.ok) throw result.error;
+  const normalized = firmwareResultSchemas.extract_firmware.parse(
+    result.value.normalized_result,
+  );
+  expect(gapsWithContinuations(normalized)).toEqual([
+    {
+      kind: "missing-extractor-dependency",
+      input_path: "$input",
+      relative_path: null,
+      handler: "gzip",
+      provider_id: "gzip-id",
+      range: { offset: 0, length: 18 },
+      root_file_range: { offset: 0, length: 18 },
+      dependencies: ["7z"],
+      continuation: expect.stringContaining("installs nothing"),
+    },
+  ]);
+  expect(normalized.diagnostics).toEqual([
+    {
+      input_path: "$input",
+      stage: "gzip",
+      missing_dependencies: ["7z"],
+      report: {
+        __typename__: "ExtractorDependencyNotFoundReport",
+        severity: "ERROR",
+        dependencies: ["", "7z"],
+      },
+    },
+  ]);
+  await assertFirmwareCleanup(fixture.launches);
+});
+
 it("routes a nested unknown chunk through its published child", async () => {
   const fixture = await firmwareFixture("nested-unknown");
   const result = await fixture.service.execute("extract_firmware", {

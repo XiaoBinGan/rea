@@ -338,7 +338,9 @@ if (args.includes("--version")) {
             handler_name: "gzip",
             is_encrypted: false,
             extraction_reports:
-              mode === "dependency" || mode === "unnamed-chunk-dependency"
+              mode === "dependency" ||
+              mode === "unnamed-chunk-dependency" ||
+              mode === "blank-named-chunk-dependency"
                 ? [
                     {
                       __typename__: "ExtractorDependencyNotFoundReport",
@@ -346,7 +348,9 @@ if (args.includes("--version")) {
                       dependencies:
                         mode === "unnamed-chunk-dependency"
                           ? []
-                          : ["sasquatch"],
+                          : mode === "blank-named-chunk-dependency"
+                            ? ["", "7z"]
+                            : ["sasquatch"],
                     },
                   ]
                 : [],
@@ -389,7 +393,11 @@ if (args.includes("--version")) {
           ? "["
           : JSON.stringify(records),
       );
-    if (mode === "dependency" || mode === "multi-file-dependency")
+    if (
+      mode === "dependency" ||
+      mode === "multi-file-dependency" ||
+      mode === "blank-named-chunk-dependency"
+    )
       process.exitCode = 1;
     if (
       mode === "workspace-cleanup-failure" ||
