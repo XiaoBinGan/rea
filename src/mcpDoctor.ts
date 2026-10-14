@@ -1,4 +1,4 @@
-import { Client } from "@modelcontextprotocol/client";
+import { Client, type CallToolResult } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { Formatter, Help, z } from "incur";
 import { performance } from "node:perf_hooks";
@@ -191,6 +191,29 @@ class OwnedStdioClientTransport extends StdioClientTransport {
   }
 }
 
+/** Detail for a probe whose transport succeeded and whose tool did not fail. */
+const REQUEST_FLOW_SUCCESS_DETAIL = "binary_session target-free request";
+
+/**
+ * Describe a transported `binary_session` probe. The transport succeeding does
+ * not make a tool-level `isError` a success, so the value's own text content is
+ * reported instead of the success phrase. REA removes its `structuredContent`
+ * error carrier before delivery, so the remaining readable failure fact is the
+ * tool's text content; when that is absent the omission stays explicit.
+ */
+const requestFlowDetail = (
+  result: Pick<CallToolResult, "isError" | "content">,
+): string => {
+  if (result.isError !== true) return REQUEST_FLOW_SUCCESS_DETAIL;
+  const text = result.content
+    .flatMap((block) => (block.type === "text" ? [block.text] : []))
+    .filter((candidate) => candidate.trim() !== "")
+    .join("\n");
+  return text === ""
+    ? "binary_session returned an error without readable content"
+    : `binary_session returned an error: ${text}`;
+};
+
 const inspectProductionMcpSession = async (
   client: Client,
   deadline: number,
@@ -252,7 +275,7 @@ const inspectProductionMcpSession = async (
       name: "request-flow",
       ok: requestFlow.ok && requestFlow.value.isError !== true,
       detail: requestFlow.ok
-        ? "binary_session target-free request"
+        ? requestFlowDetail(requestFlow.value)
         : requestFlow.error.detail,
     },
   ];
