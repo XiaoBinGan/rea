@@ -3,13 +3,24 @@ import { createInterface } from "node:readline";
 
 const snapshot = JSON.parse(await readFile(process.argv[2], "utf8"));
 const reply = structuredClone(snapshot.reply);
-if (process.argv[3] === "invalid") {
+const mode = process.argv[3];
+if (mode === "invalid") {
   reply.structuredContent.schema_violation_control = true;
   reply.content = reply.content.map((item) =>
     item.type === "text"
       ? { ...item, text: JSON.stringify(reply.structuredContent) }
       : item,
   );
+}
+if (mode === "tool-error" || mode === "tool-error-without-content") {
+  // The production transport removes REA's structured error carrier before
+  // delivery, so a tool-level failure reaches the doctor with text only.
+  delete reply.structuredContent;
+  reply.isError = true;
+  reply.content =
+    mode === "tool-error"
+      ? [{ type: "text", text: "injected binary_session failure" }]
+      : [];
 }
 
 const input = createInterface({ input: process.stdin });

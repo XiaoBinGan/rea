@@ -76,45 +76,8 @@ describe("production MCP doctor", () => {
 
 describe("production MCP doctor probe validation", () => {
   it("rejects a schema-invalid probe while retaining the discovered inventory", async () => {
-    const root = await createTestTempDirectory("rea-mcp-doctor-reply-");
-    const snapshotPath = join(root, "reply.json");
+    const snapshotPath = await captureBinarySessionSnapshot();
     const environment = { PATH: process.env.PATH ?? "" };
-    const client = new Client({ name: "doctor-reply-capture", version: "1" });
-    const transport = new StdioClientTransport({
-      command: process.execPath,
-      args: [resolve("scripts/rea.mjs"), "mcp"],
-      cwd: process.cwd(),
-      env: environment,
-      stderr: "pipe",
-    });
-    transport.stderr?.on("data", () => undefined);
-    try {
-      await client.connect(transport);
-      const tools = await client.listTools();
-      const prompts = await client.listPrompts();
-      const toolDefinition = tools.tools.find(
-        ({ name }) => name === "binary_session",
-      );
-      if (toolDefinition === undefined)
-        throw new Error("Production binary_session contract is missing");
-      const reply = await client.callTool(
-        { name: "binary_session", arguments: {} },
-        { toolDefinition },
-      );
-      await writeFile(
-        snapshotPath,
-        JSON.stringify({
-          serverInfo: client.getServerVersion(),
-          protocolVersion: client.getNegotiatedProtocolVersion(),
-          tools,
-          prompts,
-          reply,
-        }),
-      );
-    } finally {
-      await client.close();
-      await transport.close();
-    }
     // Replay real production metadata through a synthetic stdio producer.
     for (const mode of ["valid", "invalid"]) {
       const result = await runProductionMcpDoctor({
@@ -139,12 +102,59 @@ describe("production MCP doctor probe validation", () => {
         ok: true,
         detail: expect.any(String),
       });
+      if (mode === "valid")
+        expect(result.checks).toContainEqual({
+          name: "request-flow",
+          ok: true,
+          detail: "binary_session target-free request",
+        });
       if (mode === "invalid")
         expect(result.checks).toContainEqual({
           name: "request-flow",
           ok: false,
           detail: expect.stringMatching(/output schema/iu),
         });
+    }
+  }, 30_000);
+
+  it("reports a tool-level binary_session error instead of the success phrase", async () => {
+    const snapshotPath = await captureBinarySessionSnapshot();
+    const environment = { PATH: process.env.PATH ?? "" };
+    const cases = [
+      {
+        mode: "tool-error",
+        detail:
+          "binary_session returned an error: injected binary_session failure",
+      },
+      {
+        mode: "tool-error-without-content",
+        detail: "binary_session returned an error without readable content",
+      },
+    ] as const;
+    for (const { mode, detail } of cases) {
+      const result = await runProductionMcpDoctor({
+        command: process.execPath,
+        args: [
+          resolve("tests/fixtures/mcpDoctorReply.mjs"),
+          snapshotPath,
+          mode,
+        ],
+        cwd: process.cwd(),
+        environment,
+      });
+      expect(result.healthy).toBe(false);
+      expect(result.request_flow).toEqual({
+        tool: "binary_session",
+        ok: false,
+      });
+      expect(result.checks).toContainEqual({
+        name: "request-flow",
+        ok: false,
+        detail,
+      });
+      expect(
+        result.checks.find(({ name }) => name === "request-flow")?.detail,
+      ).not.toContain("target-free request");
     }
   }, 30_000);
 
@@ -264,6 +274,53 @@ describe("production MCP doctor child lifecycle", () => {
     await expect(waitForExit(pid)).resolves.toBeUndefined();
   }, 10_000);
 });
+
+/**
+ * Capture one real `binary_session` reply so the replay fixture can present
+ * production tool metadata to a synthetic stdio producer.
+ */
+const captureBinarySessionSnapshot = async (): Promise<string> => {
+  const root = await createTestTempDirectory("rea-mcp-doctor-reply-");
+  const snapshotPath = join(root, "reply.json");
+  const environment = { PATH: process.env.PATH ?? "" };
+  const client = new Client({ name: "doctor-reply-capture", version: "1" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [resolve("scripts/rea.mjs"), "mcp"],
+    cwd: process.cwd(),
+    env: environment,
+    stderr: "pipe",
+  });
+  transport.stderr?.on("data", () => undefined);
+  try {
+    await client.connect(transport);
+    const tools = await client.listTools();
+    const prompts = await client.listPrompts();
+    const toolDefinition = tools.tools.find(
+      ({ name }) => name === "binary_session",
+    );
+    if (toolDefinition === undefined)
+      throw new Error("Production binary_session contract is missing");
+    const reply = await client.callTool(
+      { name: "binary_session", arguments: {} },
+      { toolDefinition },
+    );
+    await writeFile(
+      snapshotPath,
+      JSON.stringify({
+        serverInfo: client.getServerVersion(),
+        protocolVersion: client.getNegotiatedProtocolVersion(),
+        tools,
+        prompts,
+        reply,
+      }),
+    );
+  } finally {
+    await client.close();
+    await transport.close();
+  }
+  return snapshotPath;
+};
 
 const runNoisyDoctorChild = async (body: string) => {
   const root = await createTestTempDirectory("rea-mcp-doctor-stderr-");
