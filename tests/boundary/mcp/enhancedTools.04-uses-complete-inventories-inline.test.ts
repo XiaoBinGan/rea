@@ -74,10 +74,13 @@ it("discovers declarations without counting duplicates or compiler bookkeeping",
       await client.callTool({ name: "get_objc_protocols", arguments: {} }),
     ),
   ).toMatchObject({
-    count: 2,
+    // Swift protocol recognition follows the category owner, so the protocol
+    // requirement at 0xf is retained while the plain class/thunk at 0xe is not.
+    count: 3,
     protocols: [
       { address: "0xa", name: "__OBJC_PROTOCOL_$_Delegate" },
       { address: "0xd", name: "_$s4main7ScoringMp" },
+      { address: "0xf", name: "_$s4main7ScoringP5scoreSiyFTq" },
     ],
   });
 });

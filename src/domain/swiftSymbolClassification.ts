@@ -17,15 +17,36 @@ const NOMINAL_CATEGORIES: ReadonlyMap<string, SwiftTypeCategory> = new Map([
 ]);
 
 /**
+ * Start of a Swift demangler mangling, including the optional leading
+ * underscore of legacy encodings (`__T0…`). Shared by `classifySwiftSymbol`
+ * and `isSwiftSymbolName` so both agree on which manglings are Swift.
+ */
+const SWIFT_MANGLING_START = /^_?(?:\$[sS]|_T0)/u;
+
+/**
+ * Anchored visible Swift runtime nominal name (`_Tt…`): the name itself, an
+ * optionally doubled leading underscore, or an Objective-C class/metaclass
+ * symbol for a Swift class (`OBJC_CLASS_$__TtC…`). It is anchored rather than a
+ * substring test so an Objective-C selector such as `-[Foo bar_TtP]` is not
+ * treated as Swift.
+ */
+const SWIFT_RUNTIME_NOMINAL_START =
+  /^_?(?:(?:OBJC_CLASS_|OBJC_METACLASS_)\$_)?_Tt/u;
+
+/**
  * Recognize Swift manglings and decode literal module/nominal contexts.
  * Substitutions, generic contexts, and other encodings remain unknown.
  */
 export const classifySwiftSymbol = (
   name: string,
 ): { readonly category: SwiftTypeCategory | null } | undefined => {
-  const prefix = /^_?(?:\$[sS]|_T0)/u.exec(name);
+  const prefix = SWIFT_MANGLING_START.exec(name);
   if (prefix === null) {
     if (!name.includes("_Tt")) return undefined;
+    // A `_Tt` occurrence only shows a legacy encoding is present somewhere; it
+    // does not establish that the name is Swift. That gate is owned by
+    // `isSwiftSymbolName`, so an unrecognized `_Tt` context stays
+    // category-unknown here rather than becoming Swift by itself.
     return {
       category:
         LEGACY_CATEGORIES.find(([prefix]) => name.startsWith(prefix))?.[1] ??
@@ -74,6 +95,19 @@ const SWIFT_MANGLING_PREFIXES = [
 /** Recognize names the Swift demangler accepts as mangled symbols. */
 export const isSwiftMangledSymbolName = (name: string): boolean =>
   SWIFT_MANGLING_PREFIXES.some((prefix) => name.startsWith(prefix));
+
+/**
+ * Recognize whether a symbol name is Swift at all: a demangler mangling, a
+ * visible Swift runtime nominal name (`_Tt…`), or an Objective-C
+ * class/metaclass symbol for a Swift class. Which nominal category a Swift name
+ * decodes to is a separate question owned by `classifySwiftSymbol`. An
+ * undecoded category does not make a Swift name non-Swift, and a name that
+ * merely contains `_Tt` is not Swift.
+ */
+export const isSwiftSymbolName = (name: string): boolean =>
+  isSwiftMangledSymbolName(name) ||
+  SWIFT_MANGLING_START.test(name) ||
+  SWIFT_RUNTIME_NOMINAL_START.test(name);
 
 const identifierEnd = (
   mangling: string,

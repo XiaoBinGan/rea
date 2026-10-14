@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { providerSchema } from "../evidence.js";
-import { isSwiftMangledSymbolName } from "../swiftSymbolClassification.js";
+import { isSwiftSymbolName } from "../swiftSymbolClassification.js";
 
 import {
   compareUnicodeCodePoints,
@@ -369,7 +369,7 @@ export const inspectNativeDispatchMetadata = (
       classNames.add(methodMatch[2]);
     }
 
-    if (isSwiftMangledSymbolName(entry.name) || entry.name.startsWith("_Tt"))
+    if (isSwiftSymbolName(entry.name))
       swiftSymbols.push({
         mangled_name: entry.name,
         address: entry.address,

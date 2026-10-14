@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { inspectNativeDispatchMetadata } from "./objcSwiftMetadata.js";
+import {
+  classifySwiftSymbol,
+  isSwiftMangledSymbolName,
+  isSwiftSymbolName,
+} from "../swiftSymbolClassification.js";
 
 describe("ObjC/Swift metadata", () => {
   it("bounds symbol projections and labels symbol-only metadata as partial", () => {
@@ -73,5 +78,90 @@ describe("ObjC/Swift metadata", () => {
         decoded: 0,
       }),
     );
+  });
+});
+
+describe("Swift symbol recognition follows the shared owner predicate", () => {
+  it.each([
+    ["__T04main4PairVMa", "structs"],
+    ["_TtC5Store11StoreHandle", "classes"],
+  ] as const)(
+    "retains %s with pinned partial declaration coverage",
+    (name, category) => {
+      // The shared owner recognizes the name even when the demangler mangling
+      // prefixes alone do not, so retention must not re-derive that rule.
+      expect(isSwiftMangledSymbolName(name)).toBe(false);
+      expect(isSwiftSymbolName(name)).toBe(true);
+      expect(classifySwiftSymbol(name)).toStrictEqual({ category });
+      const result = inspectNativeDispatchMetadata([
+        { address: "ram:0x1000", name },
+      ]);
+      expect(result.swift_symbols).toHaveLength(1);
+      expect(result.swift_symbols[0]?.mangled_name).toBe(name);
+      expect(result.coverage).toContainEqual({
+        facet: "swift_declarations",
+        status: "partial",
+        reason: "symbols_are_not_demangled_declarations",
+        examined: 1,
+        decoded: 0,
+      });
+      expect(result.coverage).not.toContainEqual(
+        expect.objectContaining({
+          facet: "swift_declarations",
+          reason: "no_swift_symbols_observed",
+        }),
+      );
+    },
+  );
+
+  it("retains an Objective-C class symbol for a Swift class as Swift-unclassified", () => {
+    const name = "OBJC_CLASS_$__TtC5Store11StoreHandle";
+    expect(isSwiftMangledSymbolName(name)).toBe(false);
+    expect(isSwiftSymbolName(name)).toBe(true);
+    expect(classifySwiftSymbol(name)).toStrictEqual({ category: null });
+    const result = inspectNativeDispatchMetadata([
+      { address: "ram:0x1000", name },
+    ]);
+    expect(result.swift_symbols.map((entry) => entry.mangled_name)).toEqual([
+      name,
+    ]);
+    expect(result.coverage).toContainEqual({
+      facet: "swift_declarations",
+      status: "partial",
+      reason: "symbols_are_not_demangled_declarations",
+      examined: 1,
+      decoded: 0,
+    });
+  });
+
+  it("keeps Objective-C selectors and other non-Swift names out of Swift symbols", () => {
+    const names = [
+      "-[Foo bar_TtP]",
+      "-[Thing do_TtWork]",
+      "_Tprintf",
+      "OBJC_CLASS_$_StoreController",
+      "-[Class sel]",
+    ];
+    // A `_Tt` substring leaves the category unknown; it must not make the name
+    // Swift or admit it to swift_symbols (the finding this test pins).
+    expect(classifySwiftSymbol(names[0] ?? "")).toStrictEqual({
+      category: null,
+    });
+    for (const name of names) expect(isSwiftSymbolName(name)).toBe(false);
+    const result = inspectNativeDispatchMetadata(
+      names.map((name, index) => ({
+        address: `ram:0x${(0x1000 + index * 0x100).toString(16)}`,
+        name,
+      })),
+      names.length,
+    );
+    expect(result.swift_symbols).toEqual([]);
+    expect(result.coverage).toContainEqual({
+      facet: "swift_declarations",
+      status: "unsupported",
+      reason: "no_swift_symbols_observed",
+      examined: 0,
+      decoded: 0,
+    });
   });
 });
