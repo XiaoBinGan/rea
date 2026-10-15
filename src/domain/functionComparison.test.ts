@@ -1312,6 +1312,54 @@ describe("function comparison unnamed reference endpoints", () => {
     });
   });
 
+  it("keeps a reference whose other identity is unknown unresolved", () => {
+    const target = (
+      address: string,
+      name: string | null,
+      kind: "call" | "data" = "call",
+    ) => {
+      const edge = dossierWithReference("0x1000", kind).outgoing_references[0];
+      return functionDossierSchema.parse({
+        ...dossierWithReference("0x1000", kind),
+        outgoing_references: [
+          {
+            ...edge,
+            target_address: address,
+            target_procedure: name === null ? null : procedure(address, name),
+          },
+        ],
+      });
+    };
+    const reference = (
+      left: ReturnType<typeof target>,
+      right: ReturnType<typeof target>,
+      digits: [string, string] = ["a", "b"],
+    ) =>
+      compareFunctions(
+        observe(digits[0], left),
+        observe(digits[1], right),
+      ).dimensions.find(({ dimension }) => dimension === "references");
+
+    // Across artifacts an unnamed target has no stable identity, so it could
+    // still be the target the other dossier names.
+    expect(
+      reference(target("0x1010", "helper"), target("0x1010", null)),
+    ).toMatchObject({ status: "unknown" });
+    // A named target the other dossier cannot account for stays a change.
+    expect(
+      reference(target("0x1010", "helper"), target("0x1010", "other")),
+    ).toMatchObject({ status: "changed" });
+    // A known reference-kind difference is a change whatever the identity.
+    expect(
+      reference(target("0x1010", "helper"), target("0x1010", null, "data")),
+    ).toMatchObject({ status: "changed" });
+    // One artifact identifies the target by its address, so a dossier that
+    // omits the procedure record does not report a change.
+    expect(
+      reference(target("0x1010", "helper"), target("0x1010", null), ["a", "a"]),
+    ).toMatchObject({ status: "unchanged" });
+  });
+
   it("keeps known reference-kind changes beside unnamed endpoints", () => {
     const unnamed = (kind: "call" | "data") => {
       const edge = dossierWithReference("0x1000", kind).outgoing_references[0];

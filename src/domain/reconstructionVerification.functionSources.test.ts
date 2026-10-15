@@ -820,3 +820,69 @@ describe("function reconstruction evidence integrity", () => {
     ).toThrow(/semantic identifier does not match/u);
   });
 });
+
+describe("function reconstruction unknown reference identity", () => {
+  const kind = {
+    available: true,
+    provenance: "ghidra-reference-manager",
+    type: "UNCONDITIONAL_CALL",
+    flow: true,
+    call: true,
+    jump: false,
+    data: false,
+    read: false,
+    write: false,
+    indirect: false,
+    computed: false,
+    conditional: false,
+    terminal: false,
+    primary: true,
+    operand_index: 0,
+    external: false,
+  };
+  const procedure = (address: string, name: string) => ({
+    address,
+    name,
+    classification: null,
+    body: { available: false, reason: "Not recorded" },
+  });
+  const referenceDossier = (targetProcedure: unknown) =>
+    jsonValueSchema.parse(
+      functionDossierSchema.parse({
+        ...(dossier as Record<string, unknown>),
+        outgoing_references: [
+          {
+            source_address: "0x1000",
+            target_address: "0x1010",
+            source_procedure: procedure("0x1000", "main"),
+            target_procedure: targetProcedure,
+            kind,
+          },
+        ],
+      }),
+    );
+
+  it("keeps a mixed named and unknown reference identity unresolved", () => {
+    const leftNamed = source("4", {
+      result: referenceDossier(procedure("0x1010", "helper")),
+    });
+    const rightUnknown = source("5", { result: referenceDossier(null) });
+    const compared = compareFunctions(leftNamed, rightUnknown);
+    expect(
+      compared.dimensions.find(({ dimension }) => dimension === "references"),
+    ).toMatchObject({ status: "unknown" });
+    const evidence = comparison(
+      {
+        left_evidence_id: leftNamed.evidence_id,
+        right_evidence_id: rightUnknown.evidence_id,
+      },
+      {},
+      [leftNamed, rightUnknown],
+      {},
+      compared,
+    );
+    expect(
+      admittedVerification(evidence, [leftNamed, rightUnknown], "references")(),
+    ).toMatchObject({ status: "unknown" });
+  });
+});

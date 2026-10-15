@@ -75,16 +75,111 @@ export const normalizeCfg = (
 type ReferenceEdge = FunctionSnapshot["dossier"]["outgoing_references"][number];
 
 /**
- * A named endpoint survives relocation. An unnamed endpoint is identified
- * only by its address, which names one location only within one artifact;
- * across artifacts it stays unknown (null).
+ * Within one artifact an endpoint is identified by its address, whether or not
+ * a procedure record names it: the address names exactly one location, and a
+ * missing procedure record leaves the name unknown rather than making the
+ * endpoint a different target. Across artifacts an address identifies nothing,
+ * so a named endpoint is compared by its name and an unnamed endpoint stays
+ * unknown (null).
  */
 const referenceEndpoint = (
   procedure: ReferenceEdge["source_procedure"],
   address: string,
   sameArtifact: boolean,
 ): string | { readonly address: string } | null =>
-  procedure !== null ? procedure.name : sameArtifact ? { address } : null;
+  sameArtifact ? { address } : procedure !== null ? procedure.name : null;
+
+/**
+ * True when the two reference endpoint projections could still describe the
+ * same references: a known endpoint never matches a different known endpoint,
+ * and an unknown (null) endpoint can stand for any name. A projection
+ * difference that only an unknown endpoint identity can absorb is unresolved
+ * identity, not a change (AGENTS.md: unresolved identity must remain unknown
+ * rather than being treated as absent, foreign, or aligned). Entries are
+ * matched exactly (Kuhn augmenting paths); beyond a size bound the caller
+ * keeps the conservative comparison rather than spending quadratic time.
+ */
+export const referenceEndpointsCouldMatch = (
+  left: readonly unknown[],
+  right: readonly unknown[],
+): boolean => {
+  if (left.length !== right.length || left.length === 0) return false;
+  if (left.length > 200 || right.length > 200) return false;
+  const leftEntries = left.map(referenceEndpointEntryOf);
+  const rightEntries = right.map(referenceEndpointEntryOf);
+  if (![...leftEntries, ...rightEntries].some(entryHasUnknownEndpoint))
+    return false;
+  const matchesRight: number[] = new Array(rightEntries.length).fill(-1);
+  const augment = (leftIndex: number, visited: boolean[]): boolean => {
+    const leftEntry = leftEntries[leftIndex];
+    if (leftEntry === undefined) return false;
+    for (let r = 0; r < rightEntries.length; r++) {
+      if (visited[r]) continue;
+      const rightEntry = rightEntries[r];
+      if (
+        rightEntry === undefined ||
+        !endpointEntriesMatch(leftEntry, rightEntry)
+      )
+        continue;
+      visited[r] = true;
+      const partner = matchesRight[r] ?? -1;
+      if (partner === -1 || augment(partner, visited)) {
+        matchesRight[r] = leftIndex;
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let l = 0; l < leftEntries.length; l++) {
+    const visited: boolean[] = new Array(rightEntries.length).fill(false);
+    if (!augment(l, visited)) return false;
+  }
+  return true;
+};
+
+/** The projection entries carry a direction and two endpoint values. */
+const referenceEndpointEntryOf = (value: unknown): ReferenceEndpointEntry => {
+  const entry = value as ReferenceEndpointEntry;
+  const endpoint = (item: unknown): boolean =>
+    item === null || typeof item === "string" || typeof item === "object";
+  if (
+    (entry.direction !== "in" && entry.direction !== "out") ||
+    !endpoint(entry.source) ||
+    !endpoint(entry.target)
+  )
+    throw new TypeError("Reference endpoint projection entry is malformed");
+  return entry;
+};
+
+export type ReferenceEndpointEntry = {
+  readonly direction: "in" | "out";
+  readonly source: ReferenceEndpointValue;
+  readonly target: ReferenceEndpointValue;
+};
+type ReferenceEndpointValue = string | { readonly address: string } | null;
+
+const endpointValueMatches = (
+  x: ReferenceEndpointValue,
+  y: ReferenceEndpointValue,
+): boolean =>
+  x === null ||
+  y === null ||
+  (typeof x === "string" && typeof y === "string"
+    ? x === y
+    : typeof x === "object" && typeof y === "object"
+      ? x.address === y.address
+      : false);
+
+const entryHasUnknownEndpoint = (entry: ReferenceEndpointEntry): boolean =>
+  entry.source === null || entry.target === null;
+
+const endpointEntriesMatch = (
+  a: ReferenceEndpointEntry,
+  b: ReferenceEndpointEntry,
+): boolean =>
+  a.direction === b.direction &&
+  endpointValueMatches(a.source, b.source) &&
+  endpointValueMatches(a.target, b.target);
 
 export const referenceProjection = (
   snapshot: FunctionSnapshot,
@@ -163,6 +258,39 @@ export const referenceKindProjection = (
         operand_index: edge.kind.operand_index,
         external: edge.kind.external,
       };
+    }),
+  );
+};
+
+/**
+ * The provider reference kinds alone, without endpoint identity. Differing
+ * known kinds establish a change whatever the endpoint identity, so the
+ * reference comparison weighs them before it accounts for unknown endpoints.
+ * Null when any endpoint lacks kind metadata.
+ */
+export const referenceKindFacets = (
+  snapshot: FunctionSnapshot,
+): readonly unknown[] | null => {
+  const edges = [
+    ...snapshot.dossier.incoming_references.map((edge) => ({
+      direction: "in" as const,
+      edge,
+    })),
+    ...snapshot.dossier.outgoing_references.map((edge) => ({
+      direction: "out" as const,
+      edge,
+    })),
+  ];
+  if (edges.some(({ edge }) => !edge.kind.available)) return null;
+  return sorted(
+    edges.map(({ direction, edge }) => {
+      if (!edge.kind.available)
+        throw new TypeError(
+          "Reference-kind availability changed during projection",
+        );
+      const { available, ...facets } = edge.kind;
+      void available;
+      return { direction, ...facets };
     }),
   );
 };
