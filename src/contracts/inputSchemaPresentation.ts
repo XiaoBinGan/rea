@@ -57,13 +57,104 @@ const referencedDescription = (
   return undefined;
 };
 
+/**
+ * The JSON type or types a node declares, following references and unions, so
+ * a client that does not resolve `$ref` still reads an argument as an object,
+ * an array, or a scalar instead of an untyped parameter it fills with a string
+ * (morluto/rea#3408, morluto/rea#4058). A union that only varies in type is
+ * presented as the corresponding `type` array, e.g. `["string", "null"]` for a
+ * nullable parameter. Returns undefined when the node settles on no type,
+ * because a wrong sibling would misdescribe the argument.
+ */
+const referencedType = (
+  root: Readonly<Record<string, unknown>>,
+  schema: Readonly<Record<string, unknown>>,
+  active: ReadonlySet<string> = new Set<string>(),
+): string | readonly string[] | undefined => {
+  if (typeof schema.type === "string") return schema.type;
+  if (
+    Array.isArray(schema.type) &&
+    schema.type.every((member) => typeof member === "string")
+  )
+    return schema.type as readonly string[];
+  const union = Array.isArray(schema.anyOf)
+    ? schema.anyOf
+    : Array.isArray(schema.oneOf)
+      ? schema.oneOf
+      : undefined;
+  if (union !== undefined) return unionType(root, union, active);
+  const reference = schema.$ref;
+  if (typeof reference !== "string" || active.has(reference)) return undefined;
+  const target = resolveReference(root, reference);
+  if (!isObject(target)) return undefined;
+  return referencedType(root, target, new Set([...active, reference]));
+};
+
+/** The one type every union branch declares, as one type or a type array. */
+const unionType = (
+  root: Readonly<Record<string, unknown>>,
+  branches: readonly unknown[],
+  active: ReadonlySet<string>,
+): string | readonly string[] | undefined => {
+  const types = new Set<string>();
+  for (const branch of branches) {
+    if (!isObject(branch)) return undefined;
+    const branchType = referencedType(root, branch, active);
+    if (branchType === undefined) return undefined;
+    if (typeof branchType === "string") types.add(branchType);
+    else for (const member of branchType) types.add(member);
+  }
+  if (types.size === 0) return undefined;
+  return types.size === 1 ? [...types][0] : [...types].sort();
+};
+
+/**
+ * The array item schema a reference resolves to. Copilot rejects a parameter
+ * that declares `type: "array"` without truthy `items`, so a referenced array
+ * carries its item schema beside the reference.
+ */
+const referencedItems = (
+  root: Readonly<Record<string, unknown>>,
+  schema: Readonly<Record<string, unknown>>,
+  active: ReadonlySet<string> = new Set<string>(),
+): unknown => {
+  if (schema.items !== undefined) return schema.items;
+  const reference = schema.$ref;
+  if (typeof reference !== "string" || active.has(reference)) return undefined;
+  const target = resolveReference(root, reference);
+  return isObject(target)
+    ? referencedItems(root, target, new Set([...active, reference]))
+    : undefined;
+};
+
+/** Declare the referenced type beside the reference for non-resolving clients. */
+const withReferencedType = (
+  root: Readonly<Record<string, unknown>>,
+  schema: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> => {
+  if (typeof schema.$ref !== "string" || schema.type !== undefined)
+    return schema;
+  const type = referencedType(root, schema);
+  if (type === undefined) return schema;
+  if (type !== "array" || schema.items !== undefined)
+    return { ...schema, type };
+  const items = referencedItems(root, schema);
+  if (items === undefined) return { ...schema, type };
+  // The shared definition's item schema is copied from the raw projection, so
+  // it still needs the same presentation pass that gave the reference its type.
+  const presentedItems = isObject(items)
+    ? describeSchema(items, root, () => undefined)
+    : items;
+  return { ...schema, type, items: presentedItems };
+};
+
 const describeSchema = (
   schema: unknown,
   root: Readonly<Record<string, unknown>>,
   describeProperty: (property: string) => string | undefined,
 ): unknown => {
   if (!isObject(schema)) return schema;
-  return Object.fromEntries(
+  const described = Object.fromEntries(
     Object.entries(schema).map(([key, value]) => {
       if (schemaMaps.has(key) && isObject(value))
         return [
@@ -103,6 +194,7 @@ const describeSchema = (
       return [key, value];
     }),
   );
+  return withReferencedType(root, described);
 };
 
 const objectBranch = (

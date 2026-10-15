@@ -442,7 +442,10 @@ describe("root input presentation", () => {
       anyOf: [branch],
     };
     const presented = presentInputJsonSchema(root, (property) => property);
-    expect(presented.anyOf).toEqual([branch]);
+    // The branch keeps its reference and siblings unmerged, and now also
+    // declares the type the reference resolves to so a client that does not
+    // resolve `$ref` still reads the parameter as an object.
+    expect(presented.anyOf).toEqual([{ ...branch, type: "object" }]);
     const ajv = new Ajv2020({ strict: false });
     for (const sample of [{}, { value: "value" }, { other: 1 }, null])
       expect(ajv.compile(presented)(sample)).toBe(ajv.compile(root)(sample));

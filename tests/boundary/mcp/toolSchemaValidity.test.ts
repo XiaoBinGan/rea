@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { advertisedInputExamples } from "../../../src/contracts/advertisedInputExamples.js";
 import { TOOL_CONTRACTS } from "../../../src/contracts/toolContracts.js";
+import { advertisedInputJsonSchema } from "../../../src/contracts/toolSchemaMetadata.js";
 import { emptyArraySchema } from "../../../src/domain/emptyArraySchema.js";
 import { processScenarioSchema } from "../../../src/domain/process/processScenario.js";
 import { GENERATED_MCP_TOOL_CATALOG } from "../../fixtures/mcpToolCatalog.js";
@@ -737,6 +738,51 @@ it("keeps advertised input references within the client expansion budget", () =>
       localReferenceExpansions(tool.inputSchema),
       `${tool.name} exhausts the shared reference-expansion budget`,
     ).toBeLessThanOrEqual(32);
+});
+
+// A client that ignores `$ref` reads a referenced parameter as untyped and
+// sends a string for a structured argument, which the call then rejects before
+// execution (morluto/rea#3408, morluto/rea#4058). Every advertised reference
+// must therefore declare the JSON type it resolves to, and the specific
+// parameters in those reports must be object- or array-typed on the wire.
+it("declares the resolved JSON type beside every advertised input reference", () => {
+  const bareReferences = (node: unknown, path: string, out: string[]): void => {
+    if (Array.isArray(node)) {
+      node.forEach((child, index) =>
+        bareReferences(child, `${path}[${index}]`, out),
+      );
+      return;
+    }
+    if (typeof node !== "object" || node === null) return;
+    const schema = node as Record<string, unknown>;
+    if (typeof schema.$ref === "string" && schema.type === undefined)
+      out.push(path);
+    for (const [key, value] of Object.entries(schema))
+      if (key !== "$defs" && key !== "definitions")
+        bareReferences(value, `${path}.${key}`, out);
+  };
+  for (const contract of TOOL_CONTRACTS) {
+    const schema = advertisedInputJsonSchema(contract as never);
+    const bare: string[] = [];
+    bareReferences(schema, contract.name, bare);
+    expect(bare, `${contract.name} types every advertised reference`).toEqual(
+      [],
+    );
+  }
+  const inspect = advertisedInputJsonSchema(
+    TOOL_CONTRACTS.find((entry) => entry.name === "inspect_web_page") as never,
+  );
+  expect(
+    (inspect.properties as Record<string, unknown>).allowed_origins,
+  ).toMatchObject({ type: "array" });
+  const screenshots = advertisedInputJsonSchema(
+    TOOL_CONTRACTS.find(
+      (entry) => entry.name === "compare_web_screenshots",
+    ) as never,
+  );
+  const properties = screenshots.properties as Record<string, unknown>;
+  expect(properties.before).toMatchObject({ type: "object" });
+  expect(properties.after).toMatchObject({ type: "object" });
 });
 
 it("rejects unresolved output-schema references even for uncalled tools", () => {
