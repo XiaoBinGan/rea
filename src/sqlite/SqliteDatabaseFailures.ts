@@ -10,7 +10,6 @@ import {
   AnalysisCapabilityUnavailableError,
   AnalysisCancelledError,
   AnalysisInputError,
-  AnalysisOutputError,
   AnalysisResourceConstraintError,
   AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
@@ -172,7 +171,13 @@ const ownedCommandFailure = (
       options,
     );
   if (cause.reason === "output-limit")
-    return new AnalysisOutputError(operation, cause.message, options);
+    return new AnalysisResourceConstraintError(
+      operation,
+      "memory",
+      `SQLite worker diagnostics exceeded the ${String(SQLITE_DATABASE_LIMITS.diagnosticBytes)}-byte diagnostic budget.`,
+      { max_output_bytes: SQLITE_DATABASE_LIMITS.diagnosticBytes },
+      options,
+    );
   if (
     cause.snapshot?.stderr.text.includes("JavaScript heap out of memory") ===
     true
