@@ -139,18 +139,22 @@ export const evmInterfaceFailure = (
         cause.message,
         { cause, ...cleanupOptions },
       );
-    if (
-      phase === "artifact-read" &&
-      ["limit", "path", "format"].includes(cause.reason)
-    )
+    if (cause.reason === "limit")
+      return new AnalysisResourceConstraintError(
+        "inspect_evm_interface",
+        "file-size",
+        cause.message,
+        { maximum_input_bytes: EVM_INTERFACE_LIMITS.inputBytes },
+        { cause, ...cleanupOptions },
+      );
+    if (phase === "artifact-read" && ["path", "format"].includes(cause.reason))
       return new AnalysisInputError(
         "inspect_evm_interface",
         { cause, ...cleanupOptions },
         [
           {
             path: ["path"],
-            reason:
-              cause.reason === "limit" ? "out_of_range" : "invalid_format",
+            reason: "invalid_format",
             message: cause.message,
           },
         ],

@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import { evmInterfaceSchema } from "../../../src/domain/evm/evmInterface.js";
 import { EvmoleInterfaceProvider } from "../../../src/evm/EvmoleInterfaceProvider.js";
+import { EVM_INTERFACE_LIMITS } from "../../../src/evm/EvmoleRelease.js";
 import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
 import { cleanupOwnedProcessGroup } from "../../../src/process/ProcessOwnership.js";
 import { waitForProviderProcessReady } from "../../fixtures/providerProcess.js";
@@ -524,6 +525,38 @@ it.runIf(!unsupportedHost)(
         { signal: controller.signal },
       ),
     ).toMatchObject({ ok: false, error: { _tag: "AnalysisCancelledError" } });
+  },
+);
+it.runIf(!unsupportedHost)(
+  "rejects a selected carrier over the input budget as a file-size resource constraint",
+  async () => {
+    const workspace = await createTestWorkspace("rea-evm-input-budget-");
+    onTestFinished(() => removeTestWorkspace(workspace.root));
+    const path = join(workspace.root, "oversized.hex");
+    await writeFile(path, Buffer.alloc(1));
+    await truncate(path, EVM_INTERFACE_LIMITS.inputBytes + 1);
+    const result = await new EvmoleInterfaceProvider({}).inspect({
+      path,
+      encoding: "hex",
+    });
+    if (result.ok) throw new Error("Expected the input budget to fail");
+    expect(result.error).toMatchObject({
+      _tag: "AnalysisResourceConstraintError",
+      resource: "file-size",
+      reportedLimits: {
+        maximum_input_bytes: EVM_INTERFACE_LIMITS.inputBytes,
+      },
+    });
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "resource_constraint",
+      details: {
+        operation: "inspect_evm_interface",
+        resource: "file-size",
+        reported_limits: {
+          maximum_input_bytes: EVM_INTERFACE_LIMITS.inputBytes,
+        },
+      },
+    });
   },
 );
 it.runIf(unsupportedHost)(
