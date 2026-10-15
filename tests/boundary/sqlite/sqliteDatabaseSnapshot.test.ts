@@ -15,6 +15,9 @@ import type { StableArtifactFileSystem } from "../../../src/artifacts/readStable
 import { captureSqliteDatabaseSnapshot } from "../../../src/sqlite/SqliteDatabaseSnapshot.js";
 import { inspectSqliteDatabaseSnapshot } from "../../../src/sqlite/SqliteDatabaseInspection.js";
 import { sqliteDatabaseFailure } from "../../../src/sqlite/SqliteDatabaseFailures.js";
+import { SQLITE_DATABASE_LIMITS } from "../../../src/sqlite/SqliteDatabaseLimits.js";
+import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
+import { OwnedCommandFailure } from "../../../src/process/OwnedCommand.js";
 import {
   createSqliteDatabaseFixture,
   SQLITE_NATIVE_LIMITS_AVAILABLE,
@@ -262,3 +265,44 @@ it.each(["-wal", "-journal"] as const)(
     expect(created).toBe(true);
   },
 );
+
+it("maps a worker diagnostic output limit to a memory resource constraint", () => {
+  const cause = new OwnedCommandFailure(
+    "output-limit",
+    "Command diagnostic output exceeded its complete-output budget.",
+    {
+      stdout: { text: "", bytes: 0, observedBytes: 0 },
+      stderr: {
+        text: "retained diagnostic",
+        bytes: 18,
+        observedBytes: 64 * 1024,
+      },
+      exitCode: null,
+      signal: "SIGKILL",
+      diagnosticTruncated: true,
+    },
+  );
+  const error = sqliteDatabaseFailure(cause, "/selected/private.db", "worker");
+  expect(error).toMatchObject({
+    _tag: "AnalysisResourceConstraintError",
+    resource: "memory",
+    reportedLimits: {
+      max_output_bytes: SQLITE_DATABASE_LIMITS.diagnosticBytes,
+    },
+  });
+  expect(projectAnalysisError(error)).toMatchObject({
+    code: "resource_constraint",
+    details: {
+      operation: "inspect_sqlite_database",
+      resource: "memory",
+      reported_limits: {
+        max_output_bytes: SQLITE_DATABASE_LIMITS.diagnosticBytes,
+      },
+      captured_output: {
+        stdout: "",
+        stderr: "retained diagnostic",
+        truncated: true,
+      },
+    },
+  });
+});
