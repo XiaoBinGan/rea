@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { access, lstat, readFile, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  lstat,
+  readFile,
+  symlink,
+  truncate,
+  writeFile,
+} from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -8,6 +15,7 @@ import { expect, it as nativeTest, onTestFinished } from "vitest";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import { SqliteDatabaseProvider } from "../../../src/sqlite/SqliteDatabaseProvider.js";
 import { inspectSqliteDatabaseSnapshot } from "../../../src/sqlite/SqliteDatabaseInspection.js";
+import { SQLITE_DATABASE_LIMITS } from "../../../src/sqlite/SqliteDatabaseLimits.js";
 import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
 import { PrivateRuntimeRoot } from "../../../src/process/PrivateRuntimeRoot.js";
 import { waitForProviderProcessReady } from "../../fixtures/providerProcess.js";
@@ -461,6 +469,36 @@ nativeTest.each(["absent.db", "absent-parent/absent.db"])(
             message: `Selected SQLite database does not exist: ${path}`,
           },
         ],
+      },
+    });
+  },
+);
+
+nativeTest(
+  "rejects a selected database over the input budget as a file-size resource constraint",
+  async () => {
+    const workspace = await createTestWorkspace("rea-sqlite-input-budget-");
+    onTestFinished(() => removeTestWorkspace(workspace.root));
+    const path = workspace.path("oversized.db");
+    await writeFile(path, Buffer.alloc(1));
+    await truncate(path, SQLITE_DATABASE_LIMITS.inputBytes + 1);
+    const result = await createProvider().inspect({ path });
+    if (result.ok) throw new Error("Expected the input budget to fail");
+    expect(result.error).toMatchObject({
+      _tag: "AnalysisResourceConstraintError",
+      resource: "file-size",
+      reportedLimits: {
+        maximum_input_bytes: SQLITE_DATABASE_LIMITS.inputBytes,
+      },
+    });
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "resource_constraint",
+      details: {
+        operation: "inspect_sqlite_database",
+        resource: "file-size",
+        reported_limits: {
+          maximum_input_bytes: SQLITE_DATABASE_LIMITS.inputBytes,
+        },
       },
     });
   },

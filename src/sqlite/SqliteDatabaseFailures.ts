@@ -76,10 +76,18 @@ export const sqliteDatabaseFailure = (
       });
     if (cause.reason === "cancelled")
       return new AnalysisCancelledError(operation, { cause });
+    if (cause.reason === "limit")
+      return new AnalysisResourceConstraintError(
+        operation,
+        "file-size",
+        cause.message,
+        { maximum_input_bytes: SQLITE_DATABASE_LIMITS.inputBytes },
+        { cause },
+      );
     return new AnalysisInputError(operation, { cause }, [
       {
         path: ["path"],
-        reason: cause.reason === "limit" ? "out_of_range" : "invalid_format",
+        reason: "invalid_format",
         message: cause.message,
       },
     ]);
