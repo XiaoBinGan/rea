@@ -7,11 +7,14 @@ import {
   identityProjection,
   isAutoName,
   normalizeCfg,
+  referenceEndpointsCouldMatch,
+  referenceKindFacets,
   referenceKindProjection,
   referenceProjection,
   sorted,
   stringAndNameProjection,
   swiftLiteralSitesConflict,
+  type ReferenceEndpointEntry,
 } from "./functionComparisonNormalization.js";
 import type {
   DimensionName,
@@ -280,7 +283,35 @@ const compareReferences = (
   if (
     canonicalJson(leftProjection, "Function comparison") !==
     canonicalJson(rightProjection, "Function comparison")
-  )
+  ) {
+    // A difference that only an unknown endpoint identity can explain is
+    // unresolved, not a change: the unknown target could be the known one.
+    // Differing known edge kinds still establish a change whatever the
+    // endpoint identity, so they take precedence over the unknown account.
+    const leftFacets = referenceKindFacets(left);
+    const rightFacets = referenceKindFacets(right);
+    const kindsDiffer =
+      leftFacets !== null &&
+      rightFacets !== null &&
+      canonicalJson(leftFacets, "Function comparison") !==
+        canonicalJson(rightFacets, "Function comparison");
+    if (
+      !kindsDiffer &&
+      // referenceProjection produces exactly these entries.
+      referenceEndpointsCouldMatch(
+        leftProjection as readonly ReferenceEndpointEntry[],
+        rightProjection as readonly ReferenceEndpointEntry[],
+      )
+    )
+      return unresolvedDimension({
+        dimension: "references",
+        links: context.links,
+        leftCount: leftProjection.length,
+        rightCount: rightProjection.length,
+        limitations: [
+          "A recorded reference target has unknown identity, so the differing named endpoints do not establish changed references.",
+        ],
+      });
     return dimensionResult({
       dimension: "references",
       status: "changed",
@@ -294,6 +325,7 @@ const compareReferences = (
         "Reference endpoints differ independently of provider reference-kind metadata.",
       ],
     });
+  }
   const leftKinds = referenceKindProjection(left, sameArtifact);
   const rightKinds = referenceKindProjection(right, sameArtifact);
   const kindsKnown = leftKinds !== null && rightKinds !== null;
