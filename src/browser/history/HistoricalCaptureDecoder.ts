@@ -4,6 +4,7 @@ import {
   captureMemoryFailure,
 } from "./CaptureFailures.js";
 import {
+  CAPTURE_DECODER_DIAGNOSTIC_BYTES,
   NODE_CAPTURE_HEAP_ENFORCED,
   NODE_CAPTURE_HEAP_LIMITS,
   NODE_CAPTURE_PROCESS_MEMORY_LIMIT_BYTES,
@@ -164,7 +165,7 @@ export class HistoricalCaptureDecoder {
         },
         {
           timeoutMs: WEB_NETWORK_CAPTURE_LIMITS.timeoutMs,
-          diagnosticBytes: 1024 * 1024,
+          diagnosticBytes: CAPTURE_DECODER_DIAGNOSTIC_BYTES,
         },
         options?.signal === undefined ? {} : { signal: options.signal },
       );

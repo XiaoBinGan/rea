@@ -4,7 +4,10 @@ import { projectAnalysisError } from "../../domain/analysisErrorProjection.js";
 import { analysisErrorProjectionSchema } from "../../contracts/errorSchemas.js";
 import { inspectWebNetworkCaptureInputSchema } from "../../domain/webNetworkCapture.js";
 import { historicalCaptureFailure } from "./CaptureFailures.js";
-import { NODE_CAPTURE_PROCESS_MEMORY_LIMIT_BYTES } from "./CaptureRelease.js";
+import {
+  CAPTURE_DECODER_DIAGNOSTIC_BYTES,
+  NODE_CAPTURE_PROCESS_MEMORY_LIMIT_BYTES,
+} from "./CaptureRelease.js";
 import { redactExplicitFailure } from "../../domain/explicitSensitiveFailure.js";
 import { OwnedCommandFailure } from "../../process/OwnedCommand.js";
 
@@ -286,3 +289,28 @@ it.each(["io", "unavailable"] as const)(
     });
   },
 );
+
+it("maps a decoder diagnostic output limit to a memory resource constraint", () => {
+  const input = inspectWebNetworkCaptureInputSchema.parse({
+    capture_path: "/selected/input.har",
+    format: "har",
+  });
+  const cause = new OwnedCommandFailure(
+    "output-limit",
+    "Command diagnostic output exceeded its complete-output budget.",
+  );
+  const error = historicalCaptureFailure(input, cause, "decoder");
+  expect(error).toMatchObject({
+    _tag: "AnalysisResourceConstraintError",
+    resource: "memory",
+    reportedLimits: { max_output_bytes: CAPTURE_DECODER_DIAGNOSTIC_BYTES },
+  });
+  expect(projectAnalysisError(error)).toMatchObject({
+    code: "resource_constraint",
+    details: {
+      operation: "inspect_web_network_capture",
+      resource: "memory",
+      reported_limits: { max_output_bytes: CAPTURE_DECODER_DIAGNOSTIC_BYTES },
+    },
+  });
+});

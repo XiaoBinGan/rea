@@ -6,7 +6,6 @@ import {
   AnalysisArtifactChangedError,
   AnalysisCancelledError,
   AnalysisInputError,
-  AnalysisOutputError,
   AnalysisResourceConstraintError,
   AnalysisTimeoutError,
 } from "../../domain/analysisErrorCore.js";
@@ -18,6 +17,7 @@ import {
 } from "../../domain/webNetworkCapture.js";
 import { OwnedCommandFailure } from "../../process/OwnedCommand.js";
 import {
+  CAPTURE_DECODER_DIAGNOSTIC_BYTES,
   NODE_CAPTURE_HEAP_ENFORCED,
   NODE_CAPTURE_HEAP_LIMITS,
   NODE_CAPTURE_PROCESS_MEMORY_LIMIT_BYTES,
@@ -63,7 +63,13 @@ export const historicalCaptureFailure = (
         WEB_NETWORK_CAPTURE_LIMITS.timeoutMs,
       );
     if (cause.reason === "output-limit")
-      return new AnalysisOutputError(OPERATION, cause.message);
+      return new AnalysisResourceConstraintError(
+        OPERATION,
+        "memory",
+        `Capture decoder diagnostics exceeded the ${String(CAPTURE_DECODER_DIAGNOSTIC_BYTES)}-byte diagnostic budget.`,
+        { max_output_bytes: CAPTURE_DECODER_DIAGNOSTIC_BYTES },
+        { cause },
+      );
     // The job's own notification is runtime-independent; Bun's exit status
     // and diagnostics for an allocation failure are not.
     if (
