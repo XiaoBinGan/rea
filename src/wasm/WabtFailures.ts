@@ -138,6 +138,18 @@ export const wabtFailure = (
   if (
     phase === "artifact" &&
     cause instanceof ArtifactReaderFailure &&
+    cause.reason === "limit"
+  )
+    return new AnalysisResourceConstraintError(
+      "inspect_wasm_artifact",
+      "file-size",
+      reason,
+      { maximum_input_bytes: WABT_LIMITS.inputBytes },
+      { cause, ...cleanupOptions },
+    );
+  if (
+    phase === "artifact" &&
+    cause instanceof ArtifactReaderFailure &&
     cause.reason === "integrity"
   )
     return new AnalysisArtifactChangedError(

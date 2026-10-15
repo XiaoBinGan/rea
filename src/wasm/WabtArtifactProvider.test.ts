@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { access, chmod, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, readFile, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { createTestTempDirectory } from "../../tests/fixtures/temporaryDirectory.js";
+import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import { WabtArtifactProvider } from "./WabtArtifactProvider.js";
 import { wasmArtifactSchema } from "../domain/wasm/wasmArtifact.js";
 import { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
@@ -544,6 +545,51 @@ it("reports WABT output beyond the budget as a resource constraint with a bounde
     signal: "SIGKILL",
   });
 });
+it("rejects a selected WASM artifact over the input budget before WABT launches", async () => {
+  const selectedRoot = await createTestTempDirectory("rea-wabt-input-budget-");
+  const path = join(selectedRoot, "selected.wasm");
+  await writeFile(path, Buffer.alloc(1));
+  await truncate(path, WABT_LIMITS.inputBytes + 1);
+  for (const tool of ["wasm-validate", "wasm-objdump", "wasm2wat"])
+    await writeFile(
+      join(selectedRoot, tool + (process.platform === "win32" ? ".exe" : "")),
+      "source-owned executable seam",
+      { mode: 0o700 },
+    );
+  const provider = new WabtArtifactProvider(
+    { REA_WABT_BIN_DIRECTORY: selectedRoot },
+    (input) =>
+      spawnOwnedProviderProcess({
+        ...input,
+        command: process.execPath,
+        arguments: ["-e", 'process.stdout.write("1.0.42\\n")'],
+        expectedCommand: null,
+      }),
+  );
+  try {
+    const result = await provider.inspect({
+      path,
+      glue_paths: [],
+      candidate_paths: [],
+    });
+    if (result.ok) throw new Error("Expected the input budget to fail");
+    expect(result.error).toMatchObject({
+      _tag: "AnalysisResourceConstraintError",
+      resource: "file-size",
+      reportedLimits: { maximum_input_bytes: WABT_LIMITS.inputBytes },
+    });
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "resource_constraint",
+      details: {
+        operation: "inspect_wasm_artifact",
+        resource: "file-size",
+        reported_limits: { maximum_input_bytes: WABT_LIMITS.inputBytes },
+      },
+    });
+  } finally {
+    await provider.close();
+  }
+});
 it("does not attribute wasm-objdump output to a wasm2wat launch failure", async () => {
   const selectedRoot = await createTestTempDirectory("rea-wabt-launch-");
   const path = join(selectedRoot, "selected.wasm");
@@ -613,6 +659,31 @@ it("cuts the excerpt on a code point boundary", () => {
     "/module.wasm",
   );
   expect(failure.capturedOutput?.stdout).toBe("a".repeat(4095));
+});
+it("maps a selected-artifact reader limit to a file-size resource constraint", () => {
+  const failure = wabtFailure(
+    new ArtifactReaderFailure(
+      "limit",
+      `Selected artifact exceeds ${String(WABT_LIMITS.inputBytes)} bytes: /module.wasm`,
+    ),
+    "artifact",
+    "/module.wasm",
+  );
+  expect(failure).toMatchObject({
+    _tag: "AnalysisResourceConstraintError",
+    operation: "inspect_wasm_artifact",
+    resource: "file-size",
+    reportedLimits: { maximum_input_bytes: WABT_LIMITS.inputBytes },
+    message: expect.stringContaining(String(WABT_LIMITS.inputBytes)),
+  });
+  expect(projectAnalysisError(failure)).toMatchObject({
+    code: "resource_constraint",
+    details: {
+      operation: "inspect_wasm_artifact",
+      resource: "file-size",
+      reported_limits: { maximum_input_bytes: WABT_LIMITS.inputBytes },
+    },
+  });
 });
 it("bounds the excerpt when cleanup also fails after the output budget", () => {
   expect(
