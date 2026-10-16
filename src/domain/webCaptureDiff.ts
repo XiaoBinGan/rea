@@ -374,6 +374,7 @@ const networkDimension = (
   const requestsComplete = [before, after].every((inspection) =>
     networkInventoryComplete(inspection, ["network_requests"]),
   );
+  const initiatorsComplete = [before, after].every(initiatorUrlComplete);
   const webSocketInventoryComplete = [before, after].every((inspection) =>
     networkInventoryComplete(inspection, [
       "websocket_connections",
@@ -389,6 +390,7 @@ const networkDimension = (
     metadataFields: metadata.fields,
     ambiguousIdentities: requestIdentities.ambiguousIdentities,
     inventoryComplete: requestsComplete,
+    includeInitiator: initiatorsComplete,
   };
   const sources = new Map<string, BodyShapeSources>();
   if (selected) {
@@ -467,9 +469,14 @@ const networkDimension = (
       webSocketInventoryComplete &&
       shapesComplete &&
       webSocketPayloadBytesComplete &&
-      webSocketShapesComplete,
+      webSocketShapesComplete &&
+      initiatorsComplete,
     requestIdentities.complete
-      ? "Network capture or selected HTTP/WebSocket payload-shape coverage is limited, unavailable, incomplete, or includes dropped network events."
+      ? `${
+          initiatorsComplete
+            ? ""
+            : "The compared initiator URL was omitted from at least one capture, so it cannot establish network equality or a changed initiator. "
+        }Network capture or selected HTTP/WebSocket payload-shape coverage is limited, unavailable, incomplete, or includes dropped network events.`
       : "HTTP request identity is incomplete because a resource type is unavailable; potentially matching type groups cannot establish membership/content changes or complete network equality.",
     // HTTP and WebSocket identities have independent inventory coverage. Shape
     // selection can prevent equality without erasing proven membership changes.
@@ -503,6 +510,7 @@ const networkMap = (
     >;
     readonly ambiguousIdentities: ReadonlySet<string>;
     readonly inventoryComplete: boolean;
+    readonly includeInitiator: boolean;
   },
 ): ReadonlyMap<string, string> => {
   const grouped = new Map<string, string[]>();
@@ -543,7 +551,9 @@ const networkMap = (
             };
           },
         ),
-        initiator: request.initiator,
+        ...(projection.includeInitiator
+          ? { initiator: request.initiator }
+          : {}),
         ...(shapes?.request === true
           ? { request_shape: request.body_shapes.request }
           : {}),
@@ -751,6 +761,16 @@ const incompleteSections = (completeness: {
     ...completeness.truncated_sections,
     ...completeness.unavailable_sections,
   ]);
+/**
+ * The compared initiator URL is a selected network fact. An explicit omission
+ * (section marker or exclusion) leaves that URL unknown: it can neither prove
+ * equality with another capture nor a changed initiator (morluto/rea#4211).
+ */
+const initiatorUrlComplete = (inspection: WebPageInspection): boolean =>
+  sectionsComplete(inspection, ["network_initiators"]) &&
+  !inspection.completeness.excluded.some(
+    ({ section }) => section === "network_initiators",
+  );
 
 /** Whole-collection digest differences cannot prove a change across omissions. */
 const compareAggregate = (
