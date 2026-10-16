@@ -56,7 +56,14 @@ const utilityProcess = {
     return child;
   },
 };
-const shell = { openExternal: () => Promise.resolve(), openPath: () => Promise.resolve() };
+const shellCalls = [];
+const shell = {
+  openExternal: () => Promise.resolve(),
+  openPath: () => Promise.resolve(),
+  showItemInFolder: (...args) => { shellCalls.push(["showItemInFolder", ...args]); },
+  writeShortcutLink: (...args) => { shellCalls.push(["writeShortcutLink", ...args]); return true; },
+};
+globalThis.__shellCalls = shellCalls;
 const createSession = () => {
   const value = new EventEmitter();
   value.setPermissionRequestHandler = () => undefined;
@@ -214,6 +221,59 @@ it("retains active hook evidence within its event-retention budget", async () =>
       expect.objectContaining({
         kind: "web-contents-lifecycle",
         event: "l".repeat(2048),
+      }),
+    ]),
+  );
+});
+
+it("blocks and records synchronous shell host APIs", async () => {
+  const root = await createTestTempDirectory("rea-electron-hook-shell-sync-");
+  temporary.push(root);
+  await writeElectronFixture(root);
+  const script = join(root, "shell-exercise.cjs");
+  await writeFile(
+    script,
+    `(async () => {
+const electron = require("electron");
+const showResult = electron.shell.showItemInFolder("/tmp/existing/path");
+const linkResult = electron.shell.writeShortcutLink("C:/out.lnk", "create", { target: "C:/real.exe" });
+const snapshot = globalThis.__reaElectronActiveSnapshot();
+process.stdout.write(JSON.stringify({ snapshot, showResult, linkResult, shell_calls: globalThis.__shellCalls }) + "\\n");
+})();
+`,
+  );
+  const execution = await runNode(script, root);
+  expect(execution.code, execution.stderr).toBe(0);
+  const result = JSON.parse(
+    execution.stdout.trim().split("\n").at(-1) ?? "null",
+  ) as {
+    readonly showResult: unknown;
+    readonly linkResult: unknown;
+    readonly shell_calls: readonly unknown[][];
+    readonly snapshot: { readonly events: readonly Record<string, unknown>[] };
+  };
+  // Both APIs must return the same-shaped safe result without running the
+  // originals: the real calls open the host file manager or write a shortcut.
+  expect(result.showResult).toBeUndefined();
+  expect(result.linkResult).toBe(false);
+  expect(result.shell_calls).toEqual([]);
+  expect(
+    result.snapshot.events.filter(
+      (event) => event.kind === "shell-attempt" && event.phase === "blocked",
+    ),
+  ).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        kind: "shell-attempt",
+        phase: "blocked",
+        event: "showItemInFolder",
+        argument_shapes: ["string"],
+      }),
+      expect.objectContaining({
+        kind: "shell-attempt",
+        phase: "blocked",
+        event: "writeShortcutLink",
+        argument_shapes: ["string", "string", "object"],
       }),
     ]),
   );
