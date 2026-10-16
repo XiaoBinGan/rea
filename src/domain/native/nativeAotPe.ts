@@ -1375,6 +1375,11 @@ export const parseNativeAotPe = (
     "Names are address identities; original managed type names are unavailable.",
     "Metadata rows omitted to fit the NativeAOT report-byte budget are counted explicitly.",
     "Parser work, parser-owned typed buffers, NativeAOT report JSON, and MCP delivery have separate byte budgets; incomplete scans report examined and unexamined coverage.",
+    ...(budget.truncationReason === "work-unit-budget"
+      ? [
+          "This image exceeded the built-in parser's fixed work-unit budget, so discovery stopped before it completed. The optional Linux headless Ghidra NativeAOT adapter (REA_GHIDRA_NATIVEAOT_JAR) is the documented route for broader recovery on large applications.",
+        ]
+      : []),
     ...(frozen === undefined
       ? ["The RTR directory has no FROZEN_OBJECT_REGION section."]
       : []),
