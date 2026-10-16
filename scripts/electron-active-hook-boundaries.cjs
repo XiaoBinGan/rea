@@ -348,6 +348,23 @@ const createElectronActiveBoundaryPatches = ({
         return Promise.reject(new Error("External shell effects are blocked"));
       };
     }
+    // Synchronous host-shell APIs otherwise bypass the boundary entirely and
+    // execute against the host OS; block them and return the same-shaped safe
+    // result (void for showItemInFolder, false for writeShortcutLink).
+    for (const [method, blockedResult] of [
+      ["showItemInFolder", undefined],
+      ["writeShortcutLink", false],
+    ]) {
+      const original = shell[method];
+      if (typeof original !== "function") continue;
+      shell[method] = function blockedShellCall(...args) {
+        recordRuntime("shell-attempt", method, "blocked", {
+          argument_shape_values: args,
+          error: true,
+        });
+        return blockedResult;
+      };
+    }
   };
 
   const patchChildProcess = () => {
