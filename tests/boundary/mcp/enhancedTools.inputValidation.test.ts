@@ -1,7 +1,10 @@
 import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { EnhancedTools } from "../../../src/application/EnhancedTools.js";
+import { enhancedInputSchemas } from "../../../src/contracts/enhancedInputs.js";
 import { closeEnhancedToolResources, connect } from "./enhancedToolsHarness.js";
+import { observed } from "../../fixtures/analysisExecution.js";
 import { observed as ok } from "../../fixtures/analysisExecution.js";
 
 afterEach(closeEnhancedToolResources);
@@ -44,5 +47,34 @@ describe("enhanced MCP input validation", () => {
     expect(text?.type === "text" ? text.text : "").toBe(
       JSON.stringify(parseMcpToolError(result)),
     );
+  });
+});
+
+describe("enhanced direct-call input validation", () => {
+  it("rejects undeclared direct-call input before the provider runs", async () => {
+    let calls = 0;
+    const tools = new EnhancedTools({
+      execute: async () => {
+        calls += 1;
+        return observed([]);
+      },
+    });
+    // The strict schema itself rejects the undeclared property.
+    expect(
+      enhancedInputSchemas.get_objc_protocols.safeParse({
+        unexpected: "benign",
+      }).success,
+    ).toBe(false);
+    const valid = await tools.execute("get_objc_protocols", {});
+    expect(valid.ok).toBe(true);
+    const before = calls;
+    const extra = await tools.execute("get_objc_protocols", {
+      unexpected: "benign",
+    });
+    expect(extra.ok).toBe(false);
+    if (extra.ok) return;
+    expect(extra.error._tag).toBe("AnalysisInputError");
+    // The provider must not have been invoked for the invalid call.
+    expect(calls).toBe(before);
   });
 });
