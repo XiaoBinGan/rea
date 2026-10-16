@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NativeAotParserLimits } from "./nativeAotPe.js";
 import {
   NATIVE_AOT_MAX_REPORT_BYTES,
+  NATIVE_AOT_MAX_WORKING_MEMORY_BYTES,
   parseNativeAotPe,
 } from "./nativeAotPe.js";
 import {
@@ -102,6 +103,52 @@ describe("NativeAOT parser report admission", () => {
     expect(report.reason).toMatch(/before determining whether.*root exists/iu);
     expect(report.reason).not.toMatch(
       /no unique System\.Object.*fully examined/iu,
+    );
+  });
+
+  it("states the fixed work-unit budget and adapter route when discovery stops", () => {
+    const bytes = nativeAotPeFixture();
+    const report = parseNativeAotPe(
+      bytes,
+      nativeAotPeDigest(bytes),
+      REPORT_BUDGET,
+      undefined,
+      {
+        sourceBytes: bytes.length,
+        workUnits: 2000,
+        workingMemoryBytes: NATIVE_AOT_MAX_WORKING_MEMORY_BYTES,
+      },
+    ).summary;
+    expect(report).toMatchObject({
+      status: "partial",
+      truncated: true,
+      coverage: { truncation_reason: "work-unit-budget" },
+    });
+    expect(report.reason).toMatch(
+      /method-table discovery reached its resource budget/iu,
+    );
+    const limitations = report.limitations.join("\n");
+    expect(limitations).toMatch(/fixed work-unit budget/iu);
+    expect(limitations).toMatch(/Ghidra NativeAOT adapter/iu);
+  });
+
+  it("does not claim a fixed-budget limitation for a source-cap rejection", () => {
+    const bytes = nativeAotPeFixture();
+    const limits: NativeAotParserLimits = {
+      sourceBytes: bytes.length - 1,
+      workUnits: 1024,
+      workingMemoryBytes: 1024,
+    };
+    const report = parseNativeAotPe(
+      bytes,
+      nativeAotPeDigest(bytes),
+      REPORT_BUDGET,
+      undefined,
+      limits,
+    ).summary;
+    expect(report.coverage.truncation_reason).toBe("source-byte-budget");
+    expect(report.limitations.join("\n")).not.toMatch(
+      /fixed work-unit budget/iu,
     );
   });
 });
