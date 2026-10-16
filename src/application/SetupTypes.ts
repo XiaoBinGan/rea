@@ -40,7 +40,9 @@ export type ClientConfigurationResult =
         | "target_changed"
         | "backup"
         | "write"
-        | "readback";
+        | "readback"
+        | "private_storage_uninspectable";
+      readonly detail?: string;
     }
   | {
       readonly status: "failed";
