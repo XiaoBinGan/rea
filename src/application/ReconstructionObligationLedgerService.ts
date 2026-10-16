@@ -48,7 +48,7 @@ export const buildReconstructionObligationLedgerEvidenceValidated = (
   } catch (cause: unknown) {
     if (cause instanceof NonCanonicalEvidenceBundleError)
       return err(workflowInputError(OPERATION, cause));
-    if (cause instanceof z.ZodError)
+    if (cause instanceof TypeError || cause instanceof z.ZodError)
       return err(workflowInputError(OPERATION, cause));
     return err(
       new AnalysisProtocolError(

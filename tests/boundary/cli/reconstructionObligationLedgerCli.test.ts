@@ -3,10 +3,73 @@ import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 
+import { reviewedObligation } from "../../../src/application/ReconstructionObligationLedger.fixture.js";
 import { createEvidence } from "../../../src/domain/evidence.js";
 import { createEvidenceBundle } from "../../../src/domain/evidenceBundle.js";
 
 const execute = promisify(execFile);
+
+/** Run the ledger command, returning the JSON body from success or failure. */
+const runLedgerCli = async (
+  input: unknown,
+): Promise<Record<string, unknown>> => {
+  const fail = (cause: unknown): never => {
+    throw cause;
+  };
+  try {
+    const { stdout } = await execute(
+      process.execPath,
+      [
+        "scripts/rea.mjs",
+        "build-reconstruction-obligation-ledger",
+        JSON.stringify(input),
+        "--json",
+      ],
+      { cwd: process.cwd(), env: process.env, maxBuffer: 16 * 1_024 * 1_024 },
+    );
+    return JSON.parse(stdout) as Record<string, unknown>;
+  } catch (cause: unknown) {
+    if (
+      !(cause instanceof Error) ||
+      !("stdout" in cause) ||
+      typeof cause.stdout !== "string"
+    )
+      return fail(cause);
+    return JSON.parse(cause.stdout) as Record<string, unknown>;
+  }
+};
+
+/** Caller-input mistakes that must be reported as invalid requests. */
+const ledgerRejectionCases = (
+  canonical: ReturnType<typeof createEvidenceBundle>,
+) => {
+  const base = {
+    evidence_bundle: canonical,
+    reviewed_obligations: [],
+    manifest: { bindings: [], contradictions: [] },
+  };
+  return [
+    {
+      input: {
+        ...base,
+        reviewed_obligations: [
+          reviewedObligation("obl.review.missing", "ev_" + "a".repeat(64)),
+        ],
+      },
+      message: "Reviewed obligation Evidence is missing",
+    },
+    {
+      input: {
+        ...base,
+        evidence_bundle: {
+          ...canonical,
+          records: [...canonical.records, canonical.records[0]],
+        },
+      },
+      message: "Evidence bundle contains duplicate record IDs",
+    },
+  ];
+};
 
 describe("reconstruction obligation ledger CLI parity", () => {
   it("reports non-canonical authenticated bundles as caller input", async () => {
@@ -82,6 +145,35 @@ describe("reconstruction obligation ledger CLI parity", () => {
       },
     });
   }, 20_000);
+
+  it("reports ledger caller-input mistakes as invalid requests", async () => {
+    const record = createEvidence(
+      undefined,
+      { id: "fixture", name: "Fixture", version: "1" },
+      {
+        operation: "observe",
+        parameters: { label: "present" },
+        result: { label: "present" },
+      },
+    );
+    for (const { input, message } of ledgerRejectionCases(
+      createEvidenceBundle([record]),
+    )) {
+      expect(await runLedgerCli(input)).toMatchObject({
+        code: "invalid_request",
+        category: "invalid_input",
+        retryable: true,
+        details: {
+          operation: "build_reconstruction_obligation_ledger",
+          issues: [
+            expect.objectContaining({
+              message: expect.stringContaining(message),
+            }),
+          ],
+        },
+      });
+    }
+  }, 30_000);
 
   it("builds the same Evidence-backed empty ledger through the CLI", async () => {
     const input = {
