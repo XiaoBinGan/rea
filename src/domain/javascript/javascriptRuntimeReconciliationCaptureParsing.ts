@@ -12,6 +12,7 @@ import {
 import {
   classifyBrowserCompleteness,
   type BrowserCompleteness,
+  type BrowserExclusionReason,
 } from "../browserCompleteness.js";
 import {
   electronPageInspectionSchema,
@@ -362,16 +363,11 @@ const normalizeV8Inspection = (
     ]),
     truncatedSections: new Set(result.capture.truncated ? ["scripts"] : []),
     unavailableSections: new Set(["frames", "script_sources", "workers"]),
-    excluded:
-      excludedV8Scripts(result) === 0
-        ? []
-        : [
-            {
-              section: "scripts",
-              reason: "out_of_target_scope",
-              count: excludedV8Scripts(result),
-            },
-          ],
+    excluded: excludedV8ScriptReasons(result).map(({ reason, count }) => ({
+      section: "scripts",
+      reason,
+      count,
+    })),
     droppedEvents: {
       scripts: result.capture.events_dropped,
       network_requests: 0,
@@ -406,6 +402,31 @@ const excludedV8Scripts = (result: JavaScriptRuntimeObservation): number =>
     (total, count) => total + count,
     0,
   );
+
+/** Preserve each producer exclusion reason instead of collapsing the sum. */
+const excludedV8ScriptReasons = (
+  result: JavaScriptRuntimeObservation,
+): readonly {
+  readonly reason: BrowserExclusionReason;
+  readonly count: number;
+}[] => {
+  const excluded = result.scripts.excluded;
+  const entries: {
+    readonly reason: BrowserExclusionReason;
+    readonly count: number;
+  }[] = [];
+  if (excluded.unsupported_location > 0)
+    entries.push({
+      reason: "out_of_target_scope",
+      count: excluded.unsupported_location,
+    });
+  if (excluded.invalid_protocol_value > 0)
+    entries.push({
+      reason: "invalid_protocol_value",
+      count: excluded.invalid_protocol_value,
+    });
+  return entries;
+};
 
 const assertRuntimeParameters = (
   evidence: Evidence,
