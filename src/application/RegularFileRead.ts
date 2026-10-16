@@ -97,6 +97,9 @@ const withRegularFileOwned = async <Value>(
             !sameRegularFileState(stats, currentPath)
           )
             throw new RegularFileChangedError(path);
+          // The final metadata request is the last awaited step: a caller that
+          // cancelled while it settled must not receive a successful read.
+          signal?.throwIfAborted();
           return value;
         },
       );
