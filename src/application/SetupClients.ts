@@ -11,6 +11,8 @@ export const failedConfigurationMessage = (
 ): string => {
   if (result.reason === "target_changed")
     return "The client began reading a different configuration file after the plan was shown, so no change was made. Rerun setup to review the new target.";
+  if (result.reason === "private_storage_uninspectable")
+    return `The client's private MSIX configuration could not be inspected (${result.detail}), so REA cannot confirm which file it reads. Repair access to that path, then rerun setup.`;
   if (result.reason === "path")
     return "Agent configuration path could not be safely verified. Check its permissions and, if it is a symbolic link, verify that the link resolves to a regular file owned by the current user, then rerun setup.";
   if (result.reason === "backup")

@@ -38,7 +38,7 @@ import {
   recommendedMcpToolTimeoutSeconds,
 } from "../mcpStartupPolicy.js";
 import { resolveClientConfigTransactionPath } from "./ClientConfigPath.js";
-import { packageReadTargetChanged } from "./MsixPackageStorage.js";
+import { packageReadTargetVerdict } from "./MsixPackageStorage.js";
 import {
   readRegularFileText,
   RegularFileCleanupFailure,
@@ -229,12 +229,22 @@ const persistClientConfiguration = async ({
   fallbackServers,
 }: ClientConfigurationUpdate): Promise<ClientConfigurationResult> => {
   // The plan chose this file; an MSIX package may have switched to its
-  // private copy since, for example when it quit.
-  if (
-    client.msixPackage !== undefined &&
-    (await packageReadTargetChanged(client.msixPackage, client.configPath))
-  )
-    return { status: "failed", reason: "target_changed" };
+  // private copy since, for example when it quit. An uninspectable private
+  // path is not evidence that the target changed; report the diagnosis.
+  if (client.msixPackage !== undefined) {
+    const verdict = await packageReadTargetVerdict(
+      client.msixPackage,
+      client.configPath,
+    );
+    if (verdict.kind === "changed")
+      return { status: "failed", reason: "target_changed" };
+    if (verdict.kind === "uninspectable")
+      return {
+        status: "failed",
+        reason: "private_storage_uninspectable",
+        detail: `${client.msixPackage.privateConfigPath}: ${errorDetail(verdict.cause)}`,
+      };
+  }
   const backupPath =
     original === undefined ? undefined : `${client.configPath}.rea.backup`;
   let recoveryBackupPath: string | undefined;

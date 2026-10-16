@@ -165,23 +165,35 @@ export const redirectedWriteBlocker = (
   return `This process was started by MSIX package ${view.packageFamilyName}, which redirects its writes under ${view.virtualizedRoots.join(" and ")} into the package's private storage. Changes to ${redirected.join(", ")} would not reach the files other apps read. Rerun ${operation} from a terminal that this app did not start.`;
 };
 
+/** What the final private-path recheck established about the read target. */
+export type PackageReadTargetVerdict =
+  | { readonly kind: "unchanged" }
+  | { readonly kind: "changed" }
+  | { readonly kind: "uninspectable"; readonly cause: unknown };
+
+/** The `lstat` probe used by the final recheck; injectable for tests. */
+export type PackageReadTargetProbe = (path: string) => Promise<unknown>;
+
 /**
  * Whether the package began reading its private copy after the AppData file
- * was chosen, for example by saving its settings when it quit.
+ * was chosen, for example by saving its settings when it quit. A path that
+ * cannot be inspected is neither outcome: a failed inspection does not
+ * establish that a private file appeared.
  */
-export const packageReadTargetChanged = async (
+export const packageReadTargetVerdict = async (
   view: MsixPackageView,
   configPath: string,
-): Promise<boolean> => {
-  if (configPath !== view.appDataConfigPath) return false;
+  probe: PackageReadTargetProbe = lstat,
+): Promise<PackageReadTargetVerdict> => {
+  if (configPath !== view.appDataConfigPath) return { kind: "unchanged" };
   try {
-    await lstat(view.privateConfigPath);
-    return true;
+    await probe(view.privateConfigPath);
+    return { kind: "changed" };
   } catch (cause: unknown) {
-    return !(
-      cause instanceof Error &&
+    return cause instanceof Error &&
       "code" in cause &&
       (cause.code === "ENOENT" || cause.code === "ENOTDIR")
-    );
+      ? { kind: "unchanged" }
+      : { kind: "uninspectable", cause };
   }
 };
