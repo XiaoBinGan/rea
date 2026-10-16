@@ -87,10 +87,12 @@ export const hashManagedSource = async (
         throw managedSnapshotCapacityError(operation);
       const digest = createHash("sha256");
       let byteLength = 0;
-      const stream = handle.createReadStream({
-        autoClose: false,
-        ...(signal === undefined ? {} : { signal }),
-      });
+      // Node closes the FileHandle whenever its read stream is destroyed, even
+      // with autoClose: false, so handing the abort signal to the stream would
+      // invalidate the descriptor before its owner confirms the close and leave
+      // the shared resource scope stuck retrying a failed owner. Observe
+      // cancellation between chunks and let the owner close the handle.
+      const stream = handle.createReadStream({ autoClose: false });
       for await (const chunk of stream) {
         signal?.throwIfAborted();
         if (!Buffer.isBuffer(chunk))
@@ -100,6 +102,7 @@ export const hashManagedSource = async (
         byteLength += chunk.length;
         digest.update(chunk);
       }
+      signal?.throwIfAborted();
       return { byteLength, sha256: digest.digest("hex") };
     },
     options,
@@ -184,7 +187,6 @@ const normalizeReadFailure = (
       )
     : cause instanceof AnalysisError
       ? cause
-      : (classifyBinaryTargetFilesystemFailure(path, cause) ??
-        (signal?.aborted === true
-          ? new AnalysisCancelledError(operation, { cause })
-          : cause));
+      : signal?.aborted === true
+        ? new AnalysisCancelledError(operation, { cause })
+        : (classifyBinaryTargetFilesystemFailure(path, cause) ?? cause);
