@@ -144,11 +144,19 @@ const matchedItem = (
 ): ApplicationVersionComparisonItem => {
   const dimensions = changedDimensions(pair, context);
   const complete = graphsComplete(context);
-  const observedChange = dimensions.some((dimension) =>
-    ["content", "location", "properties"].includes(dimension),
+  // Chunk/byte locations are bundle artifacts, not semantic differences:
+  // the comparison already documents that "Minified names and chunk
+  // locations are not assumed stable across versions", so a pair whose
+  // only observed difference is location is an unchanged item, and an
+  // incomplete pair is unknown rather than changed.
+  const semanticDimensions = dimensions.filter(
+    (dimension) => dimension !== "location",
+  );
+  const observedChange = semanticDimensions.some((dimension) =>
+    ["content", "properties"].includes(dimension),
   );
   const status: ApplicationVersionComparisonItem["status"] =
-    observedChange || (complete && dimensions.length > 0)
+    observedChange || (complete && semanticDimensions.length > 0)
       ? "changed"
       : complete
         ? "unchanged"
