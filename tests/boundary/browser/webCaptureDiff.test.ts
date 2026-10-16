@@ -6,6 +6,7 @@ import type { WebPageInspection } from "../../../src/domain/browserObservationSc
 import { discoverWebMcpToolsInputSchema } from "../../../src/domain/webMcpDiscovery.js";
 import { compareWebCaptures } from "../../../src/domain/webCaptureDiff.js";
 import {
+  captureSnapshotSchema,
   compareWebCapturesInputSchema,
   webCaptureDiffSchema,
 } from "../../../src/domain/webCaptureDiffSchemas.js";
@@ -1231,3 +1232,206 @@ const compareNetwork = (before: WebPageInspection, after: WebPageInspection) =>
       after: { inspection: after },
     }),
   ).dimensions.network;
+
+/**
+ * A complete passive capture carrying one request whose initiator URL is known.
+ * Extracted so the comparison test body stays within the function size budget.
+ */
+const initiatorOmissionFixture = (): WebPageInspection => {
+  const origin = "https://capture.example.test";
+  const time = "2026-10-16T00:00:00.000Z";
+  return {
+    browser: {
+      product: "normalized-fixture",
+      protocol_version: "1.3",
+      revision: "fixture",
+      user_agent: "fixture",
+      js_version: "fixture",
+    },
+    target: {
+      target_id: "page",
+      type: "page",
+      title: "Fixture",
+      url: origin,
+      origin,
+      attached: false,
+    },
+    capture_window: { started_at: time, ended_at: time, observation_ms: 0 },
+    completeness: {
+      status: "complete_within_window",
+      conditions: ["complete_within_window"],
+      policy_filtered_sections: [],
+      attach_limited_sections: [],
+      truncated_sections: [],
+      unavailable_sections: [],
+      excluded: [
+        { section: "json_body_shapes", reason: "not_approved", count: null },
+      ],
+      dropped_events: {
+        scripts: 0,
+        network_requests: 0,
+        console_events: 0,
+        websocket_connections: 0,
+        websocket_frames: 0,
+        webmcp_tools: 0,
+        timeline_events: 0,
+        total: 0,
+      },
+    },
+    frames: [],
+    dom: { total_nodes: 0, nodes: [] },
+    accessibility: {
+      total_nodes: 0,
+      nodes: [],
+      text_capture: {
+        status: "not_approved",
+        retained_bytes: 0,
+        excluded_fields: 0,
+      },
+    },
+    scripts: { total: 0, items: [] },
+    resources: [],
+    network: {
+      requests: [
+        {
+          request_id: "request-1",
+          url: `${origin}/data`,
+          origin,
+          method: "GET",
+          resource_type: "Fetch",
+          status: 200,
+          mime_type: "application/json",
+          encoded_data_length: 10,
+          redirects: [],
+          initiator: {
+            type: "script",
+            url: `${origin}/main.js`,
+            line: 1,
+            column: 0,
+          },
+          body_shapes: {
+            status: "not_approved",
+            request: null,
+            response: null,
+          },
+        },
+      ],
+      websocket_connections: [],
+      coverage_started_at: time,
+      prior_activity_available: false,
+    },
+    console: {
+      events: [],
+      coverage_started_at: time,
+      prior_activity_available: false,
+    },
+    workers: [],
+    metadata: {
+      responses: [],
+      dom_urls: [],
+      agent_hints: [],
+      excluded_dom_urls: 0,
+      headers_allowlisted: true,
+    },
+    storage: {
+      origin,
+      usage_bytes: null,
+      quota_bytes: null,
+      local_storage_keys: [],
+      session_storage_keys: [],
+      indexed_db_names: [],
+      cache_names: [],
+      content_fingerprints: [],
+      fingerprint_algorithm: "sha256",
+      fingerprints_complete: false,
+      values_redacted: true,
+    },
+    limitations: [],
+  };
+};
+
+describe("web capture initiator URL omissions", () => {
+  const snapshot = (inspection: unknown) =>
+    captureSnapshotSchema.parse({ inspection, webmcp: null });
+  const network = (before: unknown, after: unknown) =>
+    compareWebCaptures(
+      compareWebCapturesInputSchema.parse({
+        before: snapshot(before),
+        after: snapshot(after),
+      }),
+    ).dimensions.network;
+  const attachLimited = (value: WebPageInspection): WebPageInspection => {
+    const limited = structuredClone(value);
+    limited.completeness.attach_limited_sections = [
+      "network_requests",
+      "console_events",
+      "websocket_connections",
+      "websocket_frames",
+    ];
+    limited.completeness.conditions = [
+      "attach_limited",
+      ...limited.completeness.conditions.filter(
+        (condition) => condition !== "complete_within_window",
+      ),
+    ];
+    if (limited.completeness.status === "complete_within_window")
+      limited.completeness.status = "attach_limited";
+    return limited;
+  };
+
+  it("keeps an omitted initiator URL out of network equality and change", () => {
+    const retained = initiatorOmissionFixture();
+    const origin = retained.target.origin;
+    const omitted = structuredClone(retained);
+    omitted.network.requests[0]!.initiator.url = null;
+    Object.assign(omitted.completeness, {
+      status: "policy_filtered",
+      conditions: ["policy_filtered"],
+      policy_filtered_sections: ["network_initiators"],
+    });
+    omitted.completeness.excluded.push({
+      section: "network_initiators",
+      reason: "disallowed_origin",
+      count: 1,
+    });
+    const different = structuredClone(retained);
+    different.network.requests[0]!.initiator.url = `${origin}/other.js`;
+    const statusChanged = structuredClone(omitted);
+    statusChanged.network.requests[0]!.status = 201;
+    const unrelated = structuredClone(retained);
+    Object.assign(unrelated.completeness, {
+      policy_filtered_sections: ["console_text"],
+    });
+    unrelated.completeness.excluded.push({
+      section: "console_text",
+      reason: "not_approved",
+      count: 1,
+    });
+
+    // A complete capture still proves equality, so the fixture is comparable.
+    expect(network(retained, retained)).toMatchObject({ status: "unchanged" });
+    // Omission on both sides cannot establish equality...
+    expect(network(omitted, structuredClone(omitted))).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+    });
+    // ...and omission on one side cannot establish a changed initiator.
+    expect(network(retained, omitted)).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+    });
+    expect(network(omitted, retained)).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+    });
+    expect(
+      network(attachLimited(retained), attachLimited(omitted)),
+    ).toMatchObject({ status: "unknown", total_changes: 0 });
+    // Retained facts and unrelated omissions keep their established meaning.
+    expect(network(retained, different)).toMatchObject({ status: "changed" });
+    expect(network(omitted, statusChanged)).toMatchObject({
+      status: "changed",
+    });
+    expect(network(retained, unrelated)).toMatchObject({ status: "unchanged" });
+  });
+});
