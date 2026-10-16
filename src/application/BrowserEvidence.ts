@@ -179,6 +179,17 @@ const browserResultTargetOrigin = (
     typeof result.inspection.target.origin === "string"
   )
     return result.inspection.target.origin;
+  // Bundle analysis records the captured page URL under `capture.target_url`
+  // and carries no `inspection` or top-level `target`, so the provider's
+  // default target-origin scope had no provenance (morluto/rea#4385).
+  if (
+    "capture" in result &&
+    typeof result.capture === "object" &&
+    result.capture !== null &&
+    "target_url" in result.capture &&
+    typeof result.capture.target_url === "string"
+  )
+    return sanitizeBrowserUrl(result.capture.target_url).origin ?? undefined;
   if (!("target" in result)) return undefined;
   if ("origin" in result.target) return result.target.origin;
   if ("initial_url" in result.target)
