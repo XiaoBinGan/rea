@@ -111,6 +111,7 @@ export const readPeResourceLayout = (bytes: Buffer) => {
         : containing;
     if (rva < headerSize) {
       if (
+        candidates.length > 0 ||
         sections.some(
           (section) =>
             section.rva < rva + size &&
