@@ -27,6 +27,8 @@ interface ItemContext {
   readonly rightNativeEvidenceByDigest: ReadonlyMap<string, readonly string[]>;
   readonly pairByLeft: ReadonlyMap<string, string>;
   readonly pairByRight: ReadonlyMap<string, string>;
+  readonly candidatesByLeft: ReadonlyMap<string, readonly string[]>;
+  readonly candidatesByRight: ReadonlyMap<string, readonly string[]>;
   readonly leftRelationships: RelationshipIndex;
   readonly rightRelationships: RelationshipIndex;
 }
@@ -37,6 +39,8 @@ type ItemContextInput = Omit<
   | "rightNativeEvidenceByDigest"
   | "pairByLeft"
   | "pairByRight"
+  | "candidatesByLeft"
+  | "candidatesByRight"
   | "leftRelationships"
   | "rightRelationships"
 > & {
@@ -104,6 +108,8 @@ export const classifyJavaScriptApplicationVersions = (
     ),
     pairByLeft,
     pairByRight,
+    candidatesByLeft: matching.candidatesForLeft,
+    candidatesByRight: matching.candidatesForRight,
     leftRelationships: indexRelationships(context.leftGraph),
     rightRelationships: indexRelationships(context.rightGraph),
   };
@@ -142,19 +148,23 @@ const matchedItem = (
   pair: ApplicationVersionNodePair,
   context: ItemContext,
 ): ApplicationVersionComparisonItem => {
-  const dimensions = changedDimensions(pair, context);
+  const { dimensions, relationshipUnresolved } = changedDimensions(
+    pair,
+    context,
+  );
   const complete = graphsComplete(context);
   const observedChange = dimensions.some((dimension) =>
     ["content", "location", "properties"].includes(dimension),
   );
   const status: ApplicationVersionComparisonItem["status"] =
-    observedChange || (complete && dimensions.length > 0)
+    observedChange ||
+    (complete && dimensions.length > 0 && !relationshipUnresolved)
       ? "changed"
-      : complete
+      : complete && !relationshipUnresolved
         ? "unchanged"
         : "unknown";
   const finalDimensions =
-    status === "unknown" && !dimensions.includes("coverage")
+    status === "unknown" && !complete && !dimensions.includes("coverage")
       ? [...dimensions, "coverage" as const]
       : dimensions;
   const semantic: ComparisonItemSemantic = {
@@ -165,7 +175,7 @@ const matchedItem = (
     match: matchedMatch(pair),
     dimensions: finalDimensions,
     evidence_links: itemEvidenceLinks(pair.left, pair.right, context),
-    limitations: pairLimitations(pair, status),
+    limitations: pairLimitations(pair, status, relationshipUnresolved),
   };
   return itemWithId(semantic);
 };
@@ -312,13 +322,21 @@ const unmatchedMatch = (): Extract<
 
 const AMBIGUOUS_MATCH_LIMITATION =
   "Multiple nodes share the same permitted match key; no cross-version pair was selected.";
+const UNRESOLVED_RELATIONSHIP_LIMITATION =
+  "A relationship target has multiple permitted cross-version candidates; its alignment is unresolved until adjacent identities are established.";
 const INCOMPLETE_GRAPH_LIMITATION =
   "The opposite graph is incomplete, so an unmatched node cannot be classified as added or removed.";
+
+interface ChangedApplicationVersionDimensions {
+  readonly dimensions: ApplicationVersionComparisonItem["dimensions"];
+  /** A relationship target has no resolved cross-version identity. */
+  readonly relationshipUnresolved: boolean;
+}
 
 const changedDimensions = (
   pair: ApplicationVersionNodePair,
   context: ItemContext,
-): ApplicationVersionComparisonItem["dimensions"] => {
+): ChangedApplicationVersionDimensions => {
   const dimensions: ApplicationVersionComparisonItem["dimensions"] = [];
   const leftContent = contentIdentity(pair.left);
   const rightContent = contentIdentity(pair.right);
@@ -337,12 +355,13 @@ const changedDimensions = (
     canonicalJson(properties(pair.right))
   )
     dimensions.push("properties");
-  if (
-    relationshipSignature(pair.left, "left", context) !==
-    relationshipSignature(pair.right, "right", context)
-  )
+  const relationships = compareRelationships(pair, context);
+  if (relationships.unresolved || relationships.differing)
     dimensions.push("relationships");
-  return dimensions;
+  return {
+    dimensions,
+    relationshipUnresolved: relationships.unresolved,
+  };
 };
 
 const contentIdentity = (node: ApplicationNode): string | null => {
@@ -406,18 +425,51 @@ const indexRelationships = (
   };
 };
 
-const relationshipSignature = (
+interface RelationshipComparison {
+  /** At least one neighbor has candidates but no selected cross-version pair. */
+  readonly unresolved: boolean;
+  readonly differing: boolean;
+}
+
+const compareRelationships = (
+  pair: ApplicationVersionNodePair,
+  context: ItemContext,
+): RelationshipComparison => {
+  const left = relationshipEdges(pair.left, "left", context);
+  const right = relationshipEdges(pair.right, "right", context);
+  if (left.unresolved || right.unresolved)
+    return { unresolved: true, differing: false };
+  return { unresolved: false, differing: left.signature !== right.signature };
+};
+
+interface RelationshipEdges {
+  readonly signature: string;
+  readonly unresolved: boolean;
+}
+
+const relationshipEdges = (
   node: ApplicationNode,
   side: "left" | "right",
   context: ItemContext,
-): string => {
+): RelationshipEdges => {
   const { nodeById, adjacency } =
     side === "left" ? context.leftRelationships : context.rightRelationships;
   const paired = side === "left" ? context.pairByLeft : context.pairByRight;
-  const signatures = (adjacency.get(node.node_id) ?? []).map((relationship) =>
-    edgeSignature({ ...relationship, paired, nodeById }),
-  );
-  return canonicalJson(signatures.sort(compareUnicodeCodePoints));
+  const candidates =
+    side === "left" ? context.candidatesByLeft : context.candidatesByRight;
+  let unresolved = false;
+  const signatures = (adjacency.get(node.node_id) ?? []).map((relationship) => {
+    if (
+      !paired.has(relationship.neighborId) &&
+      (candidates.get(relationship.neighborId)?.length ?? 0) > 0
+    )
+      unresolved = true;
+    return edgeSignature({ ...relationship, paired, nodeById });
+  });
+  return {
+    signature: canonicalJson(signatures.sort(compareUnicodeCodePoints)),
+    unresolved,
+  };
 };
 
 interface EdgeSignatureContext {
@@ -475,6 +527,7 @@ const indexNativeEvidence = (
 const pairLimitations = (
   pair: ApplicationVersionNodePair,
   status: ApplicationVersionComparisonItem["status"],
+  relationshipUnresolved: boolean,
 ): string[] => [
   ...(pair.basis === "structural-fingerprint"
     ? [
@@ -491,9 +544,10 @@ const pairLimitations = (
         "Semantic-key pairing is a deterministic inference and is never promoted to exact identity.",
       ]
     : []),
-  ...(status === "unknown"
+  ...(status === "unknown" && !relationshipUnresolved
     ? ["Incomplete graph coverage prevents a complete node-level conclusion."]
     : []),
+  ...(relationshipUnresolved ? [UNRESOLVED_RELATIONSHIP_LIMITATION] : []),
 ];
 
 const itemWithId = <Semantic extends ComparisonItemSemantic>(
