@@ -1096,12 +1096,21 @@ const runLldb = async (
   let supervisor: ProviderProcessSupervisor | undefined;
   let retained = false;
   const finish = async (outcome: LldbOutcome): Promise<LldbExit> => {
+    // A non-zero exit is a physical failure the bridge already proved before
+    // cleanup started; cleanup interruption cannot un-observe it. A successful
+    // exit still becomes cancellation during finalization.
+    const observedFailure =
+      outcome.kind === "exited" &&
+      typeof outcome.exitCode === "number" &&
+      outcome.exitCode !== 0;
     const stopped = await supervisor?.stop();
     retained = stopped?.status === "incomplete";
+    const interruption =
+      observedFailure && deadline.interruption === "cancelled"
+        ? undefined
+        : deadline.interruption;
     return {
-      ...(deadline.interruption === undefined
-        ? outcome
-        : { kind: deadline.interruption }),
+      ...(interruption === undefined ? outcome : { kind: interruption }),
       targetLaunched: supervisor !== undefined,
       targetIdentity,
       cleanupFailure:
