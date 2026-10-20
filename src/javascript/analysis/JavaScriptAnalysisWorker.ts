@@ -514,7 +514,10 @@ export class JavaScriptAnalysisWorker {
     path: string,
   ): Promise<JavaScriptWorkerMessage> {
     for (;;) {
-      if (deadline.interruption === "cancelled")
+      // A non-zero exit is a physical failure the supervisor already observed
+      // before this interruption; it stays primary. A cancellation observed
+      // first still cancels, and a successful exit is unchanged.
+      if (!this.#observedFailureExit() && deadline.interruption === "cancelled")
         throw new AnalysisCancelledError(OPERATION);
       if (deadline.interruption === "timeout")
         throw new AnalysisTimeoutError(OPERATION, this.limits.timeoutMs);
@@ -693,6 +696,15 @@ export class JavaScriptAnalysisWorker {
       ),
     );
   }
+  /** A non-zero exit the owned supervisor observed before any interruption. */
+  #observedFailureExit(): boolean {
+    const snapshot = this.#runtime.supervisor?.snapshot();
+    return (
+      snapshot !== undefined &&
+      ((snapshot.exitCode !== undefined && snapshot.exitCode !== 0) ||
+        snapshot.signal !== undefined)
+    );
+  }
   #captured() {
     const snapshot = this.#runtime.supervisor?.snapshot();
     return {
@@ -722,7 +734,8 @@ export class JavaScriptAnalysisWorker {
     }
     // Ownership preparation is abortable before the worker deadline exists.
     if (
-      deadline?.interruption === "cancelled" ||
+      (!this.#observedFailureExit() &&
+        deadline?.interruption === "cancelled") ||
       (deadline === undefined &&
         signal?.aborted === true &&
         !(cause instanceof ProviderCleanupError) &&
