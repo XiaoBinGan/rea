@@ -32,6 +32,10 @@ export const PROTOBUF_LIMITATIONS = [
   "Schema values are interpretations of the caller-supplied descriptor, not proof that the sender used that schema. Map semantics, extensions, required-field validation and unknown schema fields are not reconstructed.",
 ] as const;
 
+// RFC 9113 field values permit horizontal tab only; C0 controls and DEL are
+// forbidden, so a trailer that carries one is not a decoded header block.
+const HTTP_FIELD_VALUE_FORBIDDEN = /[\u0000-\u0008\u000A-\u001F\u007F]/u;
+
 export const decodeProtobufBody = async (
   body: Uint8Array,
   framing: ProtobufDecoding["framing"],
@@ -169,10 +173,15 @@ export const decodeProtobufBody = async (
               !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(line.slice(0, colon))
             )
               throw new Error("Malformed trailer header");
+            // HTTP field values admit horizontal tab only; a control character
+            // would otherwise be reported as a completely decoded trailer.
+            const value = line.slice(colon + 1).replace(/^[ \t]+/, "");
+            if (HTTP_FIELD_VALUE_FORBIDDEN.test(value))
+              throw new Error("Malformed trailer header");
             budget.charge(512);
             frame.trailers.push({
               name: redact(line.slice(0, colon)),
-              value: redact(line.slice(colon + 1).replace(/^[ \t]+/, "")),
+              value: redact(value),
             });
           }
           frame.examined_bytes = length;
