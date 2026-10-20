@@ -82,7 +82,9 @@ export const runSourceMapCommand = async (
   } catch (cause: unknown) {
     return err(
       options?.signal?.aborted === true
-        ? new AnalysisCancelledError(OPERATION)
+        ? new AnalysisCancelledError(OPERATION, {
+            cause: options.signal.reason,
+          })
         : new ProviderAdapterError(PROVIDER, OPERATION, {
             cause,
             diagnostics: {
@@ -110,7 +112,11 @@ export const runSourceMapCommand = async (
   const cleanup = await command.close(result.ok ? null : result.error.message);
   if (cleanup !== undefined) return err(cleanup);
   return result.ok && options?.signal?.aborted
-    ? err(new AnalysisCancelledError(OPERATION))
+    ? err(
+        new AnalysisCancelledError(OPERATION, {
+          cause: options.signal.reason,
+        }),
+      )
     : result;
 };
 
@@ -227,8 +233,17 @@ class OwnedCodec implements SourceMapCleanupOwner {
   }
 
   check(): void {
-    if (this.deadline.interruption === "cancelled")
-      throw new AnalysisCancelledError(OPERATION);
+    // A non-zero exit is a physical failure the supervisor already observed;
+    // a later cancellation while output drains cannot un-observe it. A
+    // successful exit still becomes cancellation during finalization.
+    const observed = this.#supervisor?.observedExit();
+    const observedFailure =
+      observed !== undefined &&
+      (observed.code !== 0 || observed.signal !== null);
+    if (!observedFailure && this.deadline.interruption === "cancelled")
+      throw new AnalysisCancelledError(OPERATION, {
+        cause: this.deadline.signal.reason,
+      });
     if (this.deadline.interruption === "timeout")
       throw new AnalysisTimeoutError(
         OPERATION,
@@ -246,8 +261,14 @@ class OwnedCodec implements SourceMapCleanupOwner {
   }
 
   failure(cause: unknown): AnalysisError {
-    if (this.deadline.interruption === "cancelled")
-      return new AnalysisCancelledError(OPERATION);
+    const observed = this.#supervisor?.observedExit();
+    const observedFailure =
+      observed !== undefined &&
+      (observed.code !== 0 || observed.signal !== null);
+    if (!observedFailure && this.deadline.interruption === "cancelled")
+      return new AnalysisCancelledError(OPERATION, {
+        cause: this.deadline.signal.reason,
+      });
     if (this.deadline.interruption === "timeout")
       return new AnalysisTimeoutError(
         OPERATION,
