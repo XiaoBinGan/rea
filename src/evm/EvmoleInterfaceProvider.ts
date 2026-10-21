@@ -35,8 +35,10 @@ import {
   AnalysisUnsupportedTargetError,
   AnalysisInputError,
   AnalysisOutputError,
+  AnalysisResourceConstraintError,
 } from "../domain/analysisErrorCore.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
+import { fixedAllowanceOptions } from "../domain/fixedAllowanceRemediation.js";
 import { evmInterfaceEvidence } from "../application/evm/EvmInterfaceEvidence.js";
 import type { InspectEvmInterfaceInput } from "../domain/evm/evmInterface.js";
 import { evmInterfaceSchema } from "../domain/evm/evmInterface.js";
@@ -592,9 +594,19 @@ export class EvmoleInterfaceProvider implements EvmInterfacePort {
             },
           ]);
         if (reply.reason === "output-limit")
-          throw new AnalysisOutputError(OPERATION, reply.message, {
-            capturedOutput,
-          });
+          throw new AnalysisResourceConstraintError(
+            OPERATION,
+            "memory",
+            reply.message,
+            { max_reply_bytes: EVM_INTERFACE_LIMITS.outputBytes },
+            {
+              capturedOutput,
+              ...fixedAllowanceOptions(
+                "The EVM worker's complete-reply allowance",
+                "report",
+              ),
+            },
+          );
         throw new ProviderAdapterError(EVMOLE_PROVIDER_IDENTITY.id, OPERATION, {
           diagnostics: {
             phase,

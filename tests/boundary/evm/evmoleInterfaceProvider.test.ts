@@ -380,6 +380,7 @@ it
     "wrong-version",
     "wrong-decoded-carrier",
     "broken-reply",
+    "output-limit",
     "out-of-range-body",
   ])(
   "binds source carrier/worker representation and releases owned files: %s",
@@ -409,35 +410,43 @@ it
           scenario === "broken-reply"
             ? "broken"
             : JSON.stringify(
-                ["format", "unsupported"].includes(scenario)
+                scenario === "output-limit"
                   ? {
                       ok: false,
-                      reason: scenario,
-                      message: "Malformed hex carrier.",
+                      reason: "output-limit",
+                      message:
+                        "Complete interface evidence exceeds the 16 MiB reply budget.",
                     }
-                  : {
-                      ok: true,
-                      version: scenario === "wrong-version" ? "0.0.0" : "0.9.3",
-                      bytecode: {
-                        sha256: createHash("sha256")
-                          .update(bytes)
-                          .digest("hex"),
-                        bytes: bytes.length,
-                        hex,
+                  : ["format", "unsupported"].includes(scenario)
+                    ? {
+                        ok: false,
+                        reason: scenario,
+                        message: "Malformed hex carrier.",
+                      }
+                    : {
+                        ok: true,
+                        version:
+                          scenario === "wrong-version" ? "0.0.0" : "0.9.3",
+                        bytecode: {
+                          sha256: createHash("sha256")
+                            .update(bytes)
+                            .digest("hex"),
+                          bytes: bytes.length,
+                          hex,
+                        },
+                        raw: {
+                          functions:
+                            scenario === "out-of-range-body"
+                              ? [
+                                  {
+                                    selector: "aabbccdd",
+                                    bytecodeOffset: 5,
+                                    dispatch: "abi",
+                                  },
+                                ]
+                              : [],
+                        },
                       },
-                      raw: {
-                        functions:
-                          scenario === "out-of-range-body"
-                            ? [
-                                {
-                                  selector: "aabbccdd",
-                                  bytecodeOffset: 5,
-                                  dispatch: "abi",
-                                },
-                              ]
-                            : [],
-                      },
-                    },
               ),
         );
         return spawnOwnedProviderProcess({
@@ -465,11 +474,14 @@ it
               ? "AnalysisInputError"
               : scenario === "unsupported"
                 ? "AnalysisUnsupportedTargetError"
-                : "AnalysisOutputError",
+                : scenario === "output-limit"
+                  ? "AnalysisResourceConstraintError"
+                  : "AnalysisOutputError",
         },
       });
-    if (!result.ok)
-      expect(projectAnalysisError(result.error)).toMatchObject({
+    if (!result.ok) {
+      const projected = projectAnalysisError(result.error);
+      expect(projected).toMatchObject({
         details: {
           captured_output: {
             stdout: "",
@@ -478,6 +490,19 @@ it
           },
         },
       });
+      if (scenario === "output-limit")
+        expect(projected).toMatchObject({
+          code: "resource_constraint",
+          retryable: false,
+          details: {
+            reason:
+              "Complete interface evidence exceeds the 16 MiB reply budget.",
+            reported_limits: { max_reply_bytes: 16 * 1024 * 1024 },
+          },
+        });
+      if (scenario === "output-limit")
+        expect(projected.remediation).not.toContain("rea doctor");
+    }
     expect(await readFile(path, "utf8")).toBe("0x60006000f3\n");
     await expect(access(ownedRoot)).rejects.toMatchObject({ code: "ENOENT" });
   },
