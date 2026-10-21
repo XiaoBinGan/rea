@@ -429,5 +429,7 @@ cliTest(
       }
     }
   },
-  30_000,
+  // The compiled CLI plus a real stdio MCP session runs dozens of tool calls;
+  // CI runners need more than the 30s default and time out at exactly the cap.
+  60_000,
 );
