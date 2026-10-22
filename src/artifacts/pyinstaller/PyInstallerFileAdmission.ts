@@ -1,6 +1,7 @@
 import {
   NonRegularFileReadError,
   RegularFileAdmissionFailure,
+  RegularFileChangedError,
   RegularFileOperationCancelled,
 } from "../../filesystem/RegularFile.js";
 import { ArtifactReaderFailure } from "../ArtifactReader.js";
@@ -21,6 +22,14 @@ export const pyInstallerFileAdmissionFailure = (
     return ArtifactReaderFailure.withCleanup(
       pyInstallerFileAdmissionFailure(path, cause.cause),
       ArtifactReaderFailure.cleanupObservation(cause.cleanupCause, path),
+    );
+  // The descriptor opened; only the selected name no longer matches it. That is
+  // an identity outcome, not an unreadable archive, so keep the typed reason.
+  if (cause instanceof RegularFileChangedError)
+    return new ArtifactReaderFailure(
+      "integrity",
+      `PyInstaller source changed during admission: ${path}`,
+      { cause },
     );
   if (cause instanceof NonRegularFileReadError)
     return new ArtifactReaderFailure(
