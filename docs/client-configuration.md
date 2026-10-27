@@ -87,7 +87,9 @@ sessions; see the [VS Code MCP configuration reference](https://code.visualstudi
 
 ## GitHub Copilot CLI
 
-Setup preserves an existing `tools` selection in the REA registration, including
+Setup writes `mcpServers.rea` into the user-level `~/.copilot/mcp-config.json`, or
+`$COPILOT_HOME/mcp-config.json` when that variable is non-empty. It preserves an
+existing `tools` selection in the REA registration, including
 an empty list. New registrations default to `["*"]`. A restricted selection is
 aligned configuration; doctor does not widen it to expose every REA tool. See
 [Copilot's MCP configuration](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)
