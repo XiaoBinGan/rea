@@ -20,6 +20,9 @@ const fixture = (
   bytes.writeUInt32LE(64, 0x3c);
   bytes.write("PE\0\0", 64, "ascii");
   bytes.writeUInt16LE(0x8664, 68);
+  // COFF SizeOfOptionalHeader: the PE32+ magic is the only optional header field
+  // the identity check needs, so two bytes describe this fixture honestly.
+  bytes.writeUInt16LE(2, 84);
   bytes.writeUInt16LE(0x20b, 88);
   const manifest = {
     packageVersion: "1.0.0",

@@ -21,12 +21,14 @@ for (const mode of ["preinstall source", "packed source-free"]) {
               "scripts/lib/verifier-source-loader.mjs",
               "src/domain/windowsNativeArtifact.ts",
               "src/domain/peCoffHeader.ts",
+              "src/domain/peOptionalHeader.ts",
               "src/domain/dosMz.ts",
               "src/domain/result.ts",
             ]
           : [
               "dist/domain/windowsNativeArtifact.js",
               "dist/domain/peCoffHeader.js",
+              "dist/domain/peOptionalHeader.js",
               "dist/domain/dosMz.js",
               "dist/domain/result.js",
             ];
@@ -49,6 +51,9 @@ for (const mode of ["preinstall source", "packed source-free"]) {
       bytes.writeUInt32LE(64, 0x3c);
       bytes.write("PE\0\0", 64, "ascii");
       bytes.writeUInt16LE(0x8664, 68);
+      // COFF SizeOfOptionalHeader. The PE32+ magic below is the only optional
+      // header field the identity check reads, so two bytes describe it honestly.
+      bytes.writeUInt16LE(2, 84);
       bytes.writeUInt16LE(0x20b, 88);
       const manifest = {
         packageVersion: "1.0.0",
