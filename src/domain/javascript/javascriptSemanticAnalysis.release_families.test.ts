@@ -95,3 +95,40 @@ it.each(accepted)("keeps %s complete", (_name, source, method) => {
       })),
   ).toEqual([{ method, resolution: "complete" }]);
 });
+
+/**
+ * A binding that can hold more than one acquisition stays partial even when a
+ * method is admissible for one of them: the release is only certain if the
+ * binding held exactly one acquisition before the filter ran.
+ */
+it.each([
+  [
+    "a FileHandle or a socket, released with close",
+    `import { open } from "node:fs/promises";
+     import { connect } from "node:net";
+     let handle;
+     if (flag) { handle = await open("input.txt"); }
+     else { handle = connect(9); }
+     handle.close();`,
+    [{ method: "close", linked: 1, resolution: "partial" }],
+  ],
+  [
+    "a read stream or a write stream, released with end",
+    `import { createReadStream, createWriteStream } from "node:fs";
+     let stream;
+     if (flag) { stream = createReadStream("input.txt"); }
+     else { stream = createWriteStream("output.txt"); }
+     stream.end();`,
+    [{ method: "end", linked: 1, resolution: "partial" }],
+  ],
+])("keeps %s partial", (_name, source, expected) => {
+  expect(
+    analyzeJavaScriptSemantics(source)
+      .resourceOperations.filter(({ kind }) => kind === "release")
+      .map(({ method, linkedResourceIds, resolution }) => ({
+        method,
+        linked: linkedResourceIds.length,
+        resolution,
+      })),
+  ).toEqual(expected);
+});

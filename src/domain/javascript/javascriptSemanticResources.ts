@@ -137,7 +137,6 @@ const collectReleases = (
       resultBindingId: binding.bindingId,
       linkedResourceIds: linked.map(resourceCandidateId).sort(),
       resolution:
-        candidates.length === 1 &&
         linked.length === 1 &&
         holdsOnlyAcquisitions(binding, linked, context.state)
           ? "complete"
