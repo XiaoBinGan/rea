@@ -1541,8 +1541,8 @@ Pull requests that change only root `README*.md` files, `docs/`, `AGENTS.md`,
 `CONTRIBUTING.md`, `CHANGELOG.md`, `SECURITY.md`, `native/windows/README.md`,
 or the GitHub issue and pull-request templates run formatting and
 generated-document validation, including the small onboarding example consistency
-suite, without the source-test shards or native package lanes. Authored code
-under `docs/` (`.js`, `.ts`, `.jsx`, `.tsx`) and a `docs/**/package.json` are the
+suite, without the source-test shards or native package lanes. Authored
+JavaScript or TypeScript under `docs/` and a `docs/**/package.json` are the
 exception: those also select the static checks and the test shards, because they
 are code with an owner rather than prose. Classification compares the PR head
 with its merge base, so later base-branch changes do not expand that scope.
