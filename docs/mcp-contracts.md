@@ -1636,7 +1636,7 @@ and the identity dimension unknown.
   `normalization` defaults to `{ "rules": [] }` in the canonical scenario parser;
   this scenario-only default is omitted from the merged advertised input.
 
-The advertised schema rejects an incomplete pair, but each complete producer
+The advertised schema rejects a lone capture, but each complete producer
 observation is an abbreviated object operand there: it carries no nested capture
 fields and does not reject a structurally malformed capture. Mixed comparison families,
 and `normalization` without both scenario captures, can pass advertised
