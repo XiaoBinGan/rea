@@ -84,11 +84,6 @@ const collectAcquisitions = (
     if (!t.isCallExpression(node) && !t.isOptionalCallExpression(node)) return;
     const reference = acquisitionMethod(node.callee, context.state);
     if (reference === null) return;
-    if (
-      socketPortInFirstArgument(reference) &&
-      rejectsSocketPortLiteral(node, context)
-    )
-      return;
     output.push({
       node,
       specifier: reference.specifier,
