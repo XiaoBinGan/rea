@@ -81,22 +81,26 @@ def _zip64_end_at(file, locator: int, declared: int):
 
     APPNOTE 4.3.14 lets the record carry a variable-size extensible data sector, so its 56 fixed bytes need
     not end where the locator begins. The record's own length field is what identifies it, which also holds
-    when the archive has data prepended that its declared offset cannot account for."""
-    at = declared
-    if 0 <= at and at + 56 <= locator:
-        file.seek(at)
-        header = file.read(12)
-        if len(header) == 12 and header[:4] == ZIP64_END:
-            if at + 12 + int.from_bytes(header[4:], "little") == locator:
-                return at
-    at = locator - 56
-    while at >= 0 and locator - at <= ZIP64_EXTENSIBLE_LIMIT:
-        file.seek(at)
-        header = file.read(12)
-        if len(header) == 12 and header[:4] == ZIP64_END:
-            if at + 12 + int.from_bytes(header[4:], "little") == locator:
-                return at
-        at -= 1
+    when the archive has data prepended that its declared offset cannot account for. The bytes before the
+    locator are read once, so searching them costs no more reads than the search window."""
+    reach = min(locator, ZIP64_EXTENSIBLE_LIMIT + 56)
+    file.seek(locator - reach)
+    tail = file.read(reach)
+
+    def begins_at(at: int) -> bool:
+        offset = at - (locator - reach)
+        if offset < 0 or offset + 12 > len(tail):
+            return False
+        return (
+            tail[offset:offset + 4] == ZIP64_END
+            and at + 12 + int.from_bytes(tail[offset + 4:offset + 12], "little") == locator
+        )
+
+    if begins_at(declared):
+        return declared
+    for at in range(locator - 56, locator - reach - 1, -1):
+        if begins_at(at):
+            return at
     return None
 
 
