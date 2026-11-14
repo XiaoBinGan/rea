@@ -289,11 +289,16 @@ const retainCompilerPathsWithinReport = (
     return;
   const limitation =
     "Compiler paths were omitted to preserve dependency facts within the complete-report byte allowance; compiler-path coverage is partial. Increase producer_limits.output_bytes on the next call (CLI --producer-limits JSON); no restart is required. Increasing max_rustc_hashes alone does not raise this allowance.";
-  const baseline = {
-    ...report,
-    rustc_commit: null,
-    limitations: [...report.limitations, limitation],
-  };
+  // The reader's cause describes the list it collected. Once this allowance shortens that list
+  // the cause no longer bounds what is published, and with every hash dropped it would describe
+  // hashes this report does not contain, so it gives way to the cause that does apply — before
+  // the report is sized, so the text published is the text the sizing counted.
+  const superseded = rustcLimitation(commit);
+  const limitations = [
+    ...report.limitations.filter((line) => !superseded.includes(line)),
+    limitation,
+  ];
+  const baseline = { ...report, rustc_commit: null, limitations };
   const empty = {
     ...commit,
     hashes: [],
@@ -317,13 +322,7 @@ const retainCompilerPathsWithinReport = (
   }
   report.rustc_commit =
     count === 0 ? null : { ...empty, hashes: commit.hashes.slice(0, count) };
-  // The reader's cause describes the list it collected. Once this allowance shortens that list
-  // the cause no longer bounds what is published, and with every hash dropped it would describe
-  // hashes this report does not contain, so it gives way to the cause that does apply.
-  const superseded = rustcLimitation(commit);
-  report.limitations = baseline.limitations.filter(
-    (line) => !superseded.includes(line),
-  );
+  report.limitations = limitations;
 };
 
 const failureForPrimary = (
