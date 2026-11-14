@@ -38,12 +38,16 @@ const exists = async (path: string): Promise<boolean> => {
 
 const expectedRegistration = (
   launcher: readonly string[],
-  profile = "compact",
+  // Compact is the server default, so setup writes nothing unless the caller selected a profile.
+  profile?: "full" | "compact",
   toolTimeoutMs = 450_000,
 ) => ({
   command: launcher[0],
   args: launcher.slice(1),
-  env: { REA_MCP_INPUT_SCHEMA_PROFILE: profile },
+  // Setup writes no env member at all when the caller selected no profile.
+  ...(profile === undefined
+    ? {}
+    : { env: { REA_MCP_INPUT_SCHEMA_PROFILE: profile } }),
   startupTimeoutMs: MCP_STARTUP_POLICY.kimiStartupTimeoutMs,
   toolTimeoutMs,
 });
@@ -318,7 +322,7 @@ describe("Kimi Code input-schema profile selection", () => {
     },
   );
 
-  it("reports an omitted-profile registration stale until setup adds compact", async () => {
+  it("leaves an omitted-profile registration aligned because compact is the default", async () => {
     const { home, client } = await kimiClient();
     await writeFile(
       client.configPath,
@@ -340,13 +344,18 @@ describe("Kimi Code input-schema profile selection", () => {
           environment: {},
         })
       ).find(({ client: name }) => name === "kimi"),
-    ).toMatchObject({ state: "stale", command });
+    ).toMatchObject({ state: "aligned", command });
+    // The real writer runs, and it writes nothing: an unchanged status plus the same
+    // registration without an env member is the evidence a file was inspected, not recorded.
     expect(
       (await configureClientConfiguration(client, {}, command)).status,
-    ).toBe("configured");
+    ).toBe("unchanged");
     expect(
       JSON.parse(await readFile(client.configPath, "utf8")).mcpServers.rea,
-    ).toEqual(expectedRegistration(command, "compact", 120_000));
+    ).not.toHaveProperty("env");
+    expect(
+      JSON.parse(await readFile(client.configPath, "utf8")).mcpServers.rea,
+    ).toEqual(expectedRegistration(command, undefined, 120_000));
   });
 });
 

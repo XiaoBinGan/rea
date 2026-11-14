@@ -47,7 +47,7 @@ import {
 } from "./ClientRegistration.js";
 
 import { PRODUCT_IDENTITY } from "../identity.js";
-import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
+
 import { currentClientRegistrationCommand } from "./ClientRegistrationIdentity.js";
 import { resolveClientConfigTransactionPath } from "./ClientConfigPath.js";
 import { packageReadTargetChanged } from "./MsixPackageStorage.js";

@@ -30,10 +30,14 @@ const exists = async (path: string): Promise<boolean> => {
   }
 };
 
-const expectedRegistration = (profile = "compact") => ({
+// Compact is the server default, so setup writes nothing unless the caller selected a profile.
+const expectedRegistration = (profile?: "full" | "compact") => ({
   command: command[0],
   args: command.slice(1),
-  env: { REA_MCP_INPUT_SCHEMA_PROFILE: profile },
+  // Setup writes no env member at all when the caller selected no profile.
+  ...(profile === undefined
+    ? {}
+    : { env: { REA_MCP_INPUT_SCHEMA_PROFILE: profile } }),
 });
 
 const doctorState = async (home: string) =>
@@ -155,7 +159,7 @@ describe("LM Studio registration lifecycle", () => {
     });
   });
 
-  it("keeps an explicit full profile and reports an omitted profile stale", async () => {
+  it("keeps an explicit full profile and leaves an omitted profile aligned", async () => {
     const { home, client } = await installedHome("default");
     await writeFile(
       client.configPath,
@@ -163,7 +167,8 @@ describe("LM Studio registration lifecycle", () => {
         mcpServers: { rea: { command: command[0], args: command.slice(1) } },
       }),
     );
-    expect(await doctorState(home)).toMatchObject({ state: "stale" });
+    // Compact is the server default, so an omitted profile is the profile it runs.
+    expect(await doctorState(home)).toMatchObject({ state: "aligned" });
 
     expect(
       (

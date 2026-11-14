@@ -335,10 +335,13 @@ export const readClientRegistrationInspections = async (
         });
         continue;
       }
-      // Only the clients whose own timeout facts this read feeds need it.
-      const readsTimeoutInputs =
-        client.name === "codex" || client.name === "kimi";
-      const registrationEnvironment = readsTimeoutInputs
+      // This read validates every recorded setting and supplies the timeout facts for the
+      // clients that carry their own. Dropping the profile requirement does not drop it.
+      const validatesRecordedSettings =
+        client.name === "codex" ||
+        client.name === "kimi" ||
+        client.name === "lm_studio";
+      const registrationEnvironment = validatesRecordedSettings
         ? await clientRegistrationEnvironmentDetailsWithBudget(
             parsed,
             client,
