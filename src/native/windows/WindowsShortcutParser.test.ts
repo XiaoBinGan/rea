@@ -1030,3 +1030,44 @@ it("compares a scheme-relative URL with a UNC path as two resources", async () =
     false,
   );
 });
+it("trims a forward-slash share recorded in a filesystem field", async () => {
+  // `LinkInfo` holds a filesystem path, so Windows opens it however its separators are spelled:
+  // `Test-Path //localhost/C$/Windows` opens. Only `RelativePath` may hold a URL, where a leading
+  // `//` is scheme-relative and its terminal period belongs to the resource.
+  const report = async (
+    localBasePath: string,
+    iconLocation = "\\\\server\\share\\app.exe",
+  ) =>
+    parse(windowsShortcutBytes({ iconLocation, linkInfo: { localBasePath } }));
+  const extensionOf = (value: Awaited<ReturnType<typeof report>>) => {
+    const found = value.observations.find(
+      ({ kind }) => kind === "target_extension",
+    );
+    return found?.kind === "target_extension" ? found.extension : undefined;
+  };
+  const differs = (value: Awaited<ReturnType<typeof report>>) => {
+    const found = value.observations.find(
+      ({ kind }) => kind === "icon_location_differs_from_target",
+    );
+    return found?.kind === "icon_location_differs_from_target"
+      ? found.value
+      : undefined;
+  };
+
+  // A dot segment collapses and the trailing period trims, as for the backslash spelling.
+  expect(differs(await report("//server/share/bin/../app.exe"))).toBe(false);
+  expect(differs(await report("//server/share/app.exe."))).toBe(false);
+  expect(extensionOf(await report("//server/share/app.exe."))).toBe(".exe");
+  // A `RelativePath` URL keeps its own reading.
+  expect(
+    extensionOf(
+      await parse(
+        windowsShortcutBytes({
+          iconLocation: "",
+          linkInfo: null,
+          relativePath: "https://example.test/app.exe.",
+        }),
+      ),
+    ),
+  ).toBeNull();
+});

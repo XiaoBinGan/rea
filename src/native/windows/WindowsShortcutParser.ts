@@ -244,7 +244,10 @@ const driveType = (
   name: DRIVE_TYPES[raw] ?? null,
 });
 
-const extensionOf = (path: string | null | undefined): string | null => {
+const extensionOf = (
+  path: string | null | undefined,
+  source: RecordedPathSource,
+): string | null => {
   if (path === undefined || path === null || path.length === 0) return null;
   const normalized = path.replaceAll("/", "\\");
   const slash = normalized.lastIndexOf("\\");
@@ -255,7 +258,7 @@ const extensionOf = (path: string | null | undefined): string | null => {
   // different resource at that period; an unexpanded prefix may expand to a `\\?\` path that
   // skips the pass entirely.
   const name =
-    !WRITTEN_FILESYSTEM_PATH.test(path) ||
+    (source !== "filesystem" && !WRITTEN_FILESYSTEM_PATH.test(path)) ||
     DEVICE_PATH.test(normalized) ||
     mayExpandToDevicePath(normalized)
       ? stored
@@ -313,10 +316,12 @@ const mayExpandToDevicePath = (path: string): boolean =>
  * Win32 also trims the periods and spaces it trims before it opens a path, so
  * `C:\Tools\app.exe.` and `C:\Tools\app.exe ` name the file it names.
  */
-const normalizePath = (path: string): string => {
+const normalizePath = (path: string, source: RecordedPathSource): string => {
   // The stored spelling is the only evidence that a leading `//` is a scheme-relative URL and
   // not a UNC share, so it is read before folding replaces those separators.
-  const trims = WRITTEN_FILESYSTEM_PATH.test(path);
+  // A filesystem field is a path by construction, so Windows opens it however its separators
+  // are spelled. Only `relative` may hold a URL, where a leading `//` is scheme-relative.
+  const trims = source === "filesystem" || WRITTEN_FILESYSTEM_PATH.test(path);
   const folded = foldPath(path);
   if (!trims || DEVICE_PATH.test(folded) || mayExpandToDevicePath(folded))
     return folded;
@@ -364,20 +369,34 @@ const hasUnexpandedVariable = (path: string): boolean =>
  * non-ASCII ANSI byte is a character from the unobserved system code page,
  * which its Latin1 projection does not name.
  */
+/**
+ * Where a recorded path came from.
+ *
+ * `filesystem` fields are filesystem paths by construction: Windows opens them and applies its
+ * normalization whatever their separators are, including the forward-slash share spelling
+ * `//server/share`, which `Test-Path` opens. `relative` is the only field that may hold a URL.
+ */
+type RecordedPathSource = "filesystem" | "relative";
+
 type RecordedPath = {
   readonly path: string;
   /** Holds non-ASCII text projected from ANSI bytes. */
   readonly ansi: boolean;
   /** Holds non-ASCII UTF-16 text. */
   readonly unicode: boolean;
+  readonly source: RecordedPathSource;
 };
 
 const isAscii = (text: string): boolean =>
   [...text].every((char) => char <= "\u007f");
 
-const recorded = (path: string, ansi: boolean): RecordedPath => {
+const recorded = (
+  path: string,
+  ansi: boolean,
+  source: RecordedPathSource,
+): RecordedPath => {
   const nonAscii = !isAscii(path);
-  return { path, ansi: ansi && nonAscii, unicode: !ansi && nonAscii };
+  return { path, ansi: ansi && nonAscii, unicode: !ansi && nonAscii, source };
 };
 
 /** Two paths compare as text only when their non-ASCII parts share one encoding. */
@@ -391,14 +410,18 @@ const iconDiffersFromTarget = (
   if (icon === null) return null;
   const text = icon.value;
   if (!isFullPath(text) || hasUnexpandedVariable(text)) return null;
-  const iconPath = recorded(text, icon.encoding === "ansi");
-  const location = normalizePath(text);
+  const iconPath = recorded(text, icon.encoding === "ansi", "filesystem");
+  const location = normalizePath(text, iconPath.source);
   const fullTargets = targets.filter((target) => isFullPath(target.path));
   const fixedTargets = fullTargets.filter(
     (target) =>
       !hasUnexpandedVariable(target.path) && comparableText(target, iconPath),
   );
-  if (fixedTargets.some((target) => normalizePath(target.path) === location))
+  if (
+    fixedTargets.some(
+      (target) => normalizePath(target.path, target.source) === location,
+    )
+  )
     return false;
   // A variable-bearing target, or one whose ANSI bytes the icon text cannot be
   // compared with, could name the icon's file, so no difference is claimed.
@@ -414,7 +437,11 @@ const linkInfoTargets = (
   const suffix =
     suffixText === null || suffixText.length === 0
       ? null
-      : recorded(suffixText, info.common_path_suffix_unicode === null);
+      : recorded(
+          suffixText,
+          info.common_path_suffix_unicode === null,
+          "filesystem",
+        );
   // Each part keeps its own encoding, so an ASCII ANSI part never hides a
   // comparable Unicode part.
   const withSuffix = (base: RecordedPath): RecordedPath =>
@@ -424,18 +451,25 @@ const linkInfoTargets = (
           path: `${base.path.replace(/\\$/u, "")}\\${suffix.path.replace(/^\\/u, "")}`,
           ansi: base.ansi || suffix.ansi,
           unicode: base.unicode || suffix.unicode,
+          source: base.source,
         };
   const values: RecordedPath[] = [];
   const local = info.local_base_path_unicode ?? info.local_base_path;
   if (local !== null && (suffix !== null || local.length > 0))
     values.push(
-      withSuffix(recorded(local, info.local_base_path_unicode === null)),
+      withSuffix(
+        recorded(local, info.local_base_path_unicode === null, "filesystem"),
+      ),
     );
   const net = info.common_network_relative_link;
   if (net !== null) {
     const share = net.net_name_unicode ?? net.net_name;
     if (share !== null)
-      values.push(withSuffix(recorded(share, net.net_name_unicode === null)));
+      values.push(
+        withSuffix(
+          recorded(share, net.net_name_unicode === null, "filesystem"),
+        ),
+      );
   }
   return values;
 };
@@ -450,7 +484,9 @@ const targetPaths = (report: {
     report.link_info === null ? [] : linkInfoTargets(report.link_info);
   const relative = report.string_data.relative_path;
   if (relative !== null)
-    values.push(recorded(relative.value, relative.encoding === "ansi"));
+    values.push(
+      recorded(relative.value, relative.encoding === "ansi", "relative"),
+    );
   if (report.id_list !== null) {
     const lastFile = [...report.id_list.items]
       .reverse()
@@ -458,7 +494,11 @@ const targetPaths = (report: {
     // Type bit 0x04 marks a UTF-16LE name; otherwise the name is ANSI.
     if (lastFile?.kind === "file_entry")
       values.push(
-        recorded(lastFile.short_name, (lastFile.type_byte & 0x04) === 0),
+        recorded(
+          lastFile.short_name,
+          (lastFile.type_byte & 0x04) === 0,
+          "filesystem",
+        ),
       );
   }
   // A stored literal target, never expanded: `%VAR%` text stays as written.
@@ -468,7 +508,8 @@ const targetPaths = (report: {
     const stored = unicode
       ? block.decoded.target_unicode
       : block.decoded.target_ansi;
-    if (stored.length > 0) values.push(recorded(stored, !unicode));
+    if (stored.length > 0)
+      values.push(recorded(stored, !unicode, "filesystem"));
   }
   return values;
 };
@@ -503,7 +544,10 @@ const observationsOf = (
     {
       kind: "target_extension",
       evidence_kind: "derived",
-      extension: extensionOf(targets[0]?.path ?? null),
+      extension:
+        targets[0] === undefined
+          ? null
+          : extensionOf(targets[0].path, targets[0].source),
     },
     {
       kind: "show_command_minimized",
