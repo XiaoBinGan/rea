@@ -80,26 +80,34 @@ def _zip64_end_at(file, locator: int, declared: int):
     """Where the Zip64 end record begins, or None when no record ends exactly at the locator.
 
     APPNOTE 4.3.14 lets the record carry a variable-size extensible data sector, so its 56 fixed bytes need
-    not end where the locator begins. The record's own length field is what identifies it, which also holds
-    when the archive has data prepended that its declared offset cannot account for. The bytes before the
-    locator are read once, so searching them costs no more reads than the search window."""
+    not end where the locator begins, and 4.3.15 has the locator declare the record's offset. A declared
+    offset is read where it points, whatever the sector's size; the backward search behind the locator is
+    what a bound applies to. The record's own length field is what identifies it either way, which also
+    holds when the archive has data prepended that its declared offset cannot account for."""
+
+    def begins_at(at: int, window: bytes, base: int) -> bool:
+        offset = at - base
+        if offset < 0 or offset + 12 > len(window):
+            return False
+        return (
+            window[offset:offset + 4] == ZIP64_END
+            and at + 12 + int.from_bytes(window[offset + 4:offset + 12], "little") == locator
+        )
+
+    if 0 <= declared and declared + 56 <= locator:
+        file.seek(declared)
+        head = file.read(12)
+        if (
+            len(head) == 12
+            and head[:4] == ZIP64_END
+            and declared + 12 + int.from_bytes(head[4:], "little") == locator
+        ):
+            return declared
     reach = min(locator, ZIP64_EXTENSIBLE_LIMIT + 56)
     file.seek(locator - reach)
     tail = file.read(reach)
-
-    def begins_at(at: int) -> bool:
-        offset = at - (locator - reach)
-        if offset < 0 or offset + 12 > len(tail):
-            return False
-        return (
-            tail[offset:offset + 4] == ZIP64_END
-            and at + 12 + int.from_bytes(tail[offset + 4:offset + 12], "little") == locator
-        )
-
-    if begins_at(declared):
-        return declared
     for at in range(locator - 56, locator - reach - 1, -1):
-        if begins_at(at):
+        if begins_at(at, tail, locator - reach):
             return at
     return None
 
