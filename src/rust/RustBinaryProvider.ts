@@ -317,7 +317,13 @@ const retainCompilerPathsWithinReport = (
   }
   report.rustc_commit =
     count === 0 ? null : { ...empty, hashes: commit.hashes.slice(0, count) };
-  report.limitations = baseline.limitations;
+  // The reader's cause describes the list it collected. Once this allowance shortens that list
+  // the cause no longer bounds what is published, and with every hash dropped it would describe
+  // hashes this report does not contain, so it gives way to the cause that does apply.
+  const superseded = rustcLimitation(commit);
+  report.limitations = baseline.limitations.filter(
+    (line) => !superseded.includes(line),
+  );
 };
 
 const failureForPrimary = (

@@ -25,6 +25,60 @@ it("reports a recoverable compiler prefix without refusing the dependency report
   );
 });
 
+it("reports the cause that bounds the compiler prefix it publishes", async () => {
+  // The reader records why it stopped collecting hashes. When the complete-report allowance
+  // shortens that list afterwards, the reader's own cause no longer bounds what is published, so
+  // the report must describe the allowance that does — and must not advise raising
+  // max_rustc_hashes, which the same report says cannot help.
+  const root = await createTestTempDirectory("rea-rust-report-bytes-cause-");
+  const path = join(root, "many-hashes.elf");
+  await writeFile(path, createRustHashOverflowImage());
+  const provider = new RustBinaryProvider();
+  const at = async (output_bytes: number) => {
+    const result = await provider.inspect({
+      path,
+      producer_limits: { output_bytes },
+    });
+    if (!result.ok) throw result.error;
+    return result.value;
+  };
+
+  const shortened = await at(4546);
+  expect(shortened.rustc_commit?.coverage).toMatchObject({
+    reason: "report_bytes",
+    effective_limit: 4546,
+  });
+  expect(shortened.rustc_commit?.hashes.length ?? 0).toBeGreaterThan(0);
+  expect(shortened.rustc_commit?.hashes.length ?? 0).toBeLessThan(64);
+  expect(shortened.limitations.join("\n")).not.toMatch(
+    /reached max_rustc_hashes=\d+|Increase max_rustc_hashes on the next/u,
+  );
+  expect(shortened.limitations.join("\n")).toMatch(
+    /producer_limits\.output_bytes/u,
+  );
+
+  // Raising max_rustc_hashes cannot add hashes to an allowance-shortened list.
+  const raised = await provider.inspect({
+    path,
+    producer_limits: { output_bytes: 4546 },
+    max_rustc_hashes: 1000,
+  });
+  if (!raised.ok) throw raised.error;
+  expect(raised.value.rustc_commit?.hashes.length).toBe(
+    shortened.rustc_commit?.hashes.length,
+  );
+
+  // With no hash left, nothing may claim that retained hashes are a prefix.
+  const emptied = await at(2640);
+  expect(emptied.rustc_commit).toBeNull();
+  expect(emptied.limitations.join("\n")).not.toMatch(
+    /retained hashes are a prefix|reached max_rustc_hashes=\d+/u,
+  );
+  expect(emptied.limitations.join("\n")).toMatch(
+    /compiler-path coverage is partial/u,
+  );
+});
+
 it("recovers the same complete Rust image after input and report budget changes", async () => {
   const root = await createTestTempDirectory("rea-rust-input-budget-");
   const path = join(root, "selected.elf");
