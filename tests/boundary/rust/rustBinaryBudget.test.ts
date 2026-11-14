@@ -68,16 +68,20 @@ it("reports the cause that bounds the compiler prefix it publishes", async () =>
     shortened.rustc_commit?.hashes.length,
   );
 
-  // The text published is the text the sizing counted: no budget is overrun, and every
-  // shortened report names the allowance that bounds it.
-  for (let budget = 2400; budget <= 6800; budget += 200) {
+  // The invariant over every allowance: a report publishing the whole collected list is bounded
+  // by the reader's own limit and says so, while one that dropped a hash is bounded by this
+  // allowance and says that instead. The published text is also the text the sizing counted.
+  for (let budget = 2400; budget <= 7000; budget += 25) {
     const report = await at(budget);
     expect(Buffer.byteLength(JSON.stringify(report))).toBeLessThanOrEqual(
       budget,
     );
-    if (report.rustc_commit === null) continue;
+    if (report.rustc_commit?.hashes.length === 64) {
+      expect(report.rustc_commit.coverage?.reason).toBe("max_rustc_hashes");
+      continue;
+    }
     expect(report.limitations.join("\n")).not.toMatch(
-      /reached max_rustc_hashes=\d+|Increase max_rustc_hashes on the next/u,
+      /reached max_rustc_hashes=\d+|Increase max_rustc_hashes on the next|retained hashes are a prefix/u,
     );
   }
 });
