@@ -341,13 +341,19 @@ export const readClientRegistrationInspections = async (
         client.name === "codex" ||
         client.name === "kimi" ||
         client.name === "lm_studio";
+      // Only the clients with a timeout recommendation of their own need the provider budget
+      // resolved; asking for it otherwise can fail a registration whose settings are valid.
+      const readsProviderBudget =
+        client.name === "codex" || client.name === "kimi";
       const registrationEnvironment = validatesRecordedSettings
         ? await clientRegistrationEnvironmentDetailsWithBudget(
             parsed,
             client,
             {},
             "effective",
-            options.resolveProviderRequestBudget,
+            readsProviderBudget
+              ? options.resolveProviderRequestBudget
+              : undefined,
             options.platform,
           )
         : undefined;
