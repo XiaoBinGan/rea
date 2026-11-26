@@ -265,9 +265,18 @@ const driveType = (
   name: DRIVE_TYPES[raw] ?? null,
 });
 
-const extensionOf = (path: string, ansi: boolean): string | null => {
+const extensionOf = (
+  path: string,
+  ansi: boolean,
+  win32Names: boolean,
+): string | null => {
   if (path.length === 0) return null;
-  const normalized = fileNameSegment(path.replaceAll("/", "\\"));
+  // Only a source with Win32 path semantics opens the name through Win32, so only
+  // there does a trailing period or space leave the extension unchanged. A URL
+  // recorded in the same field keeps its own trailing dot.
+  const normalized = win32Names
+    ? fileNameSegment(path.replaceAll("/", "\\"))
+    : path.replaceAll("/", "\\");
   const slash = normalized.lastIndexOf("\\");
   const name = slash === -1 ? normalized : normalized.slice(slash + 1);
   const dot = name.lastIndexOf(".");
@@ -323,6 +332,13 @@ const normalizePath = (path: string): string => {
     : `${root[0] ?? ""}\\${segments.join("\\")}`;
 };
 
+/**
+ * Text Win32 would open as a path: a drive or UNC form, or a plain relative name.
+ * A URL with an explicit scheme is not one, so its trailing dot stays meaningful.
+ */
+const isWin32PathText = (path: string): boolean =>
+  !/^[a-z][a-z0-9+.-]*:\/\//iu.test(path);
+
 /** A drive or UNC path. Filenames, relative paths, and `%VAR%` forms name no fixed location. */
 const isFullPath = (path: string): boolean =>
   /^(?:[a-z]:\\|\\\\)/u.test(foldPath(path));
@@ -358,13 +374,13 @@ type TargetPathUncertainty = {
 const isAscii = (text: string): boolean =>
   [...text].every((char) => char <= "\u007f");
 
-const recorded = (path: string, ansi: boolean) => {
+const recorded = (path: string, ansi: boolean, win32Names: boolean = true) => {
   const nonAscii = !isAscii(path);
   return {
     path,
     ansi: ansi && nonAscii,
     unicode: !ansi && nonAscii,
-    extension: extensionOf(path, ansi),
+    extension: extensionOf(path, ansi, win32Names),
   };
 };
 
@@ -454,7 +470,7 @@ const linkInfoTargets = (
       path: joined,
       ansi: base.ansi || suffix.ansi,
       unicode: base.unicode || suffix.unicode,
-      extension: extensionOf(joined, base.ansi || suffix.ansi),
+      extension: extensionOf(joined, base.ansi || suffix.ansi, true),
     };
   };
   const values: RecordedPath[] = [];
@@ -490,8 +506,16 @@ const targetPaths = (
       ? []
       : linkInfoTargets(report.link_info, uncertainty);
   const relative = report.string_data.relative_path;
+  // RelativePath holds whatever producer wrote it, including a URL, so Win32 name
+  // trimming applies only when the text is a Win32 path.
   if (relative !== null)
-    values.push(recorded(relative.value, relative.encoding === "ansi"));
+    values.push(
+      recorded(
+        relative.value,
+        relative.encoding === "ansi",
+        isWin32PathText(relative.value),
+      ),
+    );
   if (report.id_list !== null) {
     const lastFile = [...report.id_list.items]
       .reverse()

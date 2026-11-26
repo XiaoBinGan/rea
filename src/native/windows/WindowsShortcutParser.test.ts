@@ -1686,3 +1686,28 @@ it("derives the extension from the joined LinkInfo target", async () => {
   expect(await extensionFor("C:\\Tools", "app.exe.")).toBe(".exe");
   expect(await extensionFor("C:\\Tools", "report.")).toBeNull();
 });
+
+/**
+ * A URL recorded in RelativePath keeps its own trailing dot: Win32 name trimming
+ * applies only to text the host would open as a Win32 path.
+ */
+it("keeps a URL's trailing dot out of the published target extension", async () => {
+  const extensionFor = async (relativePath: string) => {
+    const report = await parse(
+      windowsShortcutBytes({
+        linkInfo: null,
+        relativePath,
+        idList: null,
+        iconLocation: "",
+      }),
+    );
+    const found = report.observations.find(
+      ({ kind }) => kind === "target_extension",
+    );
+    return found?.kind === "target_extension" ? found.extension : undefined;
+  };
+  // The dot is part of the HTTP resource name, so no extension is published.
+  expect(await extensionFor("https://example.test/app.exe.")).toBeNull();
+  // A Win32 relative name is still trimmed the way Win32 opens it.
+  expect(await extensionFor("app.exe.")).toBe(".exe");
+});
