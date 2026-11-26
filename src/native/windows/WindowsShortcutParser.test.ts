@@ -1711,3 +1711,28 @@ it("keeps a URL's trailing dot out of the published target extension", async () 
   // A Win32 relative name is still trimmed the way Win32 opens it.
   expect(await extensionFor("app.exe.")).toBe(".exe");
 });
+
+/**
+ * `//host/path` is either a scheme-relative URL or a forward-slash UNC path, and
+ * the bytes carry nothing that separates them, so the name stays as written: no
+ * Win32 trimming means no extension is published for a trailing period.
+ */
+it("leaves a scheme-relative target's name as written", async () => {
+  const extensionFor = async (relativePath: string) => {
+    const report = await parse(
+      windowsShortcutBytes({
+        linkInfo: null,
+        relativePath,
+        idList: null,
+        iconLocation: "",
+      }),
+    );
+    const found = report.observations.find(
+      ({ kind }) => kind === "target_extension",
+    );
+    return found?.kind === "target_extension" ? found.extension : undefined;
+  };
+  expect(await extensionFor("//example.test/app.exe.")).toBeNull();
+  // Without a trailing period the stored name still yields its extension.
+  expect(await extensionFor("//example.test/app.exe")).toBe(".exe");
+});
