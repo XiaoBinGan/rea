@@ -446,7 +446,7 @@ export const browserScenarioActionSchema = z.discriminatedUnion("action", [
       .min(1)
       .optional()
       .describe(
-        "Statuses that complete the step; any other status fails it. Omitted means any response completes it.",
+        "Statuses that complete the step. When omitted, any non-redirect response can complete the step.",
       ),
   }),
   z.strictObject({
@@ -497,7 +497,7 @@ export const browserScenarioStorageSchema = z
   })
   .default({ cookies: [], local_storage: [], session_storage: [] })
   .describe(
-    "Optional initial cookies, local storage, or session storage. Defaults to empty; every supplied value and origin must be declared and within the allowed origins.",
+    "Optional initial cookies, local storage, or session storage. Select each cookie destination and each storage origin directly. Defaults to empty.",
   );
 
 export const browserScenarioSecretSchema = z.strictObject({
@@ -505,8 +505,13 @@ export const browserScenarioSecretSchema = z.strictObject({
   environment_variable: z
     .string()
     .min(1)
-    .refine(
-      (name) => !name.includes("=") && !name.includes("\0"),
+    // A `.refine` states a refusal a caller reads only after sending a request,
+    // and both characters break the child process's environment before any
+    // action runs, so the check is the pattern itself: an anchored complement
+    // class is one portable `pattern` keyword, which the compact presentation
+    // keeps at the leaf instead of reducing it to a plain string.
+    .regex(
+      /^[^=\x00]+$/u,
       "Environment variable names cannot contain '=' or NUL",
     ),
 });

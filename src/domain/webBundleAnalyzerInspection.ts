@@ -3,6 +3,7 @@ import type { JavaScriptSemanticPrecisionInput } from "./javascript/javascriptSe
 import {
   isBrowserNetworkRequest,
   createXhrOpenRequestQuery,
+  literalFetchRequestConstructorUrl,
 } from "./javascript/javascriptNetworkRequests.js";
 import type { JavaScriptSemanticAnalysisState } from "./javascript/javascriptSemanticState.js";
 import {
@@ -26,6 +27,7 @@ import type { JavaScriptOpenReceiverFact } from "./javascript/javascriptSemantic
 import { isIntrinsicMapLookup } from "./javascript/javascriptSemanticIntrinsicInstances.js";
 import { isUnmodifiedGlobalReference } from "./javascript/javascriptSemanticGlobalReference.js";
 import {
+  stringValue,
   semanticStaticPropertyKey,
   isNullishJavaScriptSyntax,
   staticObjectProperty,
@@ -36,7 +38,6 @@ import {
   STATIC_ROUTE_CALL_NAMES,
   calleeName,
   endpointArgument,
-  stringValue,
 } from "./javascript/javascriptStaticAnalysisHelpers.js";
 import {
   location,
@@ -157,15 +158,15 @@ export const analyzeScript = (
         node: endpoint.node,
         accumulator,
       });
-  if (index.bindings.returnedReferenceWidenings.size > 0)
+  if (index.bindings.observations.returnedReferenceWidenings.size > 0)
     accumulator.widenedScripts.push(script.script_key);
   // Finishing route recovery can itself exhaust a getter or alias budget.
   // Snapshot the evaluator's facts only after every consumer has finished.
   const routeFacts = completeSemanticSteps(routeScan.finishSteps());
   const { bindings } = index;
   const reached = new Set([
-    ...bindings.valueResourceLimits,
-    ...bindings.getterResourceLimits,
+    ...bindings.observations.valueResourceLimits,
+    ...bindings.observations.getterResourceLimits,
   ]);
   return {
     routeFacts,
@@ -288,7 +289,14 @@ const inspectCall = (
       ? { ...endpoint, kind: knownRequest ? "endpoint" : endpoint.kind }
       : undefined;
   if (endpoint === undefined && knownRequest && !mapLookup)
-    addProvenRequestEndpoint(script, node, name, xhrRequest, accumulator);
+    addProvenRequestEndpoint(
+      script,
+      node,
+      name,
+      xhrRequest,
+      bindings,
+      accumulator,
+    );
   if (networkEndpoint?.kind === "candidate")
     addEndpointCandidate(
       script,
@@ -395,20 +403,22 @@ const addEndpointCandidate = (
 /**
  * A proven browser request whose URL the callee spelling did not classify:
  * the URL is XMLHttpRequest `open`'s second argument, otherwise the first.
- * A literal URL is an endpoint; any other present argument is kept as an
- * unknown endpoint at its call site rather than dropped.
+ * A recoverable URL literal is an endpoint. Other present arguments retain
+ * an unknown endpoint at their call site.
  */
 const addProvenRequestEndpoint = (
   script: IncludedScript,
   node: t.CallExpression | t.OptionalCallExpression | t.NewExpression,
   name: string,
   xhrRequest: boolean,
+  bindings: JavaScriptSemanticAnalysisState,
   accumulator: AnalysisAccumulator,
 ): void => {
   const url = xhrRequest ? node.arguments[1] : node.arguments[0];
   if (url === undefined) return;
   const mechanism = `call:${name}`;
-  const literal = stringValue(url);
+  const literal =
+    stringValue(url) ?? literalFetchRequestConstructorUrl(node, url, bindings);
   if (literal !== undefined) {
     addFinding({
       collection: accumulator.endpoints,

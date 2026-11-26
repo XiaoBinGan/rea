@@ -1,3 +1,4 @@
+import { appendToMapList } from "../appendToMapList.js";
 import { err, ok, type Result } from "../result.js";
 import { dexDescriptorSchema, dexTypeSchema } from "./dexTypes.js";
 import { parseJsonWithDuplicatePolicy } from "../jsonDuplicateMember.js";
@@ -318,16 +319,6 @@ const malformed = (
     state.malformed.push({ line, reason });
 };
 
-const append = <Value>(
-  map: Map<string, Value[]>,
-  key: string,
-  value: Value,
-): void => {
-  const list = map.get(key);
-  if (list === undefined) map.set(key, [value]);
-  else list.push(value);
-};
-
 // Validated names and types hold no whitespace, so spaces separate safely.
 const methodKey = (
   obfuscated: string,
@@ -401,7 +392,7 @@ const closeGroup = (state: ParseState): void => {
       group.residual === undefined ? undefined : ownString(group.residual),
     residualConflict: group.residualConflict,
   };
-  append(group.record.methods, ownString(group.obfuscated), record);
+  appendToMapList(group.record.methods, ownString(group.obfuscated), record);
   const identity = indexed ?? { first: record, byResidual: new Map() };
   if (record.residual !== undefined)
     identity.byResidual.set(record.residual, record);
@@ -445,7 +436,7 @@ const parseClassLine = (state: ParseState, line: string, number: number) => {
     return;
   state.current = record;
   state.records.classes++;
-  append(state.classes, record.residualName, record);
+  appendToMapList(state.classes, record.residualName, record);
   const alias = state.residualAliases.get(record.name);
   if (alias === undefined)
     state.residualAliases.set(record.name, record.residualName);
@@ -478,7 +469,7 @@ const parseField = (
     residual: undefined,
     residualConflict: false,
   };
-  append(record.fields, ownString(obfuscated), field);
+  appendToMapList(record.fields, ownString(obfuscated), field);
   state.records.fields++;
   state.last = field;
   return true;
@@ -655,7 +646,10 @@ const parseMetadata = (
   }
   if (metadata.id !== "com.android.tools.r8.residualsignature") return;
   const target = state.last;
-  if (target === undefined) return;
+  if (target === undefined) {
+    malformed(state, number, "metadata");
+    return;
+  }
   const schema = "outermost" in target ? dexDescriptorSchema : dexTypeSchema;
   const signature = schema.safeParse(metadata.signature);
   if (!signature.success) {
@@ -752,13 +746,19 @@ export const parseProguardMapping = (
   if (state.indexBytes > state.limits.indexBytes) capacity(state, "index");
   if (state.headerBytes > state.limits.projectionBytes)
     capacity(state, "projection");
+  // R8’s BufferedReader-based mapping reader treats CR, LF, and CRLF as
+  // one line ending each. Find boundaries incrementally to keep memory bounded.
+  const lineEnd = /\r\n?|\n/gu;
   let start = 0;
   while (start <= text.length && state.failure === undefined) {
-    const newline = text.indexOf("\n", start);
-    const end = newline < 0 ? text.length : newline;
-    parseLine(state, text.slice(start, end), state.line);
-    if (newline < 0) break;
-    start = newline + 1;
+    const newline = lineEnd.exec(text);
+    parseLine(
+      state,
+      text.slice(start, newline?.index ?? text.length),
+      state.line,
+    );
+    if (newline === null) break;
+    start = lineEnd.lastIndex;
     state.line++;
   }
   if (state.failure !== undefined) return err(state.failure);

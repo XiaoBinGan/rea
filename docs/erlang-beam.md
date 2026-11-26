@@ -130,10 +130,17 @@ coverage, and executes no bytecode.
 
 The selected file is limited to 64 MiB by default (512 MiB maximum). At most
 64 chunks and 4096 atoms are examined by default, and at most 65536 export,
-import, and lambda rows together. Malformed `FOR1`/`BEAM` headers, truncated
+import, and lambda rows together (`max_table_rows`, up to 1,048,576). A refusal
+at any of these budgets reports `details.limit` with the field, its effective
+value, range and default; raise it on the next call.
+
+Malformed `FOR1`/`BEAM` headers, truncated
 chunks, and `AtU8` names that are not valid UTF-8 fail without partial success.
 The reader checks each encountered chunk's payload and alignment padding against
 the declared form before applying the chunk count limit.
+An atom count above `max_atoms` still checks the length fields of at most
+`max_atoms` entries. A length that leaves too few bytes for the remaining
+entries is a format failure.
 
 This workflow does not execute bytecode, inflate `LitT` literals, or decode
 `Attr`/`CInf` external-term payloads. Complete coverage describes this static

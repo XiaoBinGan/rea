@@ -1,3 +1,4 @@
+import { uint32LE as u32 } from "../native/BinaryInteger.fixture.js";
 import { createHash } from "node:crypto";
 
 import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
@@ -181,12 +182,6 @@ const guidHeap = (mvid: Buffer = DEFAULT_MVID): Buffer => {
 const u16 = (value: number): Buffer => {
   const bytes = Buffer.alloc(2);
   bytes.writeUInt16LE(value, 0);
-  return bytes;
-};
-
-const u32 = (value: number): Buffer => {
-  const bytes = Buffer.alloc(4);
-  bytes.writeUInt32LE(value, 0);
   return bytes;
 };
 
@@ -601,18 +596,17 @@ const tablesStream = (
     if (tableRows === undefined) continue;
     counts.push(u32(tableRows.length));
   }
-  const data: Buffer[] = [];
-  for (let index = 0; index <= 44; index += 1) {
-    const tableRows = rows.get(index);
-    if (tableRows === undefined) continue;
-    data.push(...tableRows);
-  }
-  return Buffer.concat([
+  const stream = [
     header,
     ...counts,
     ...(extraData === undefined ? [] : [u32(extraData)]),
-    ...data,
-  ]);
+  ];
+  for (let index = 0; index <= 44; index += 1) {
+    const tableRows = rows.get(index);
+    if (tableRows === undefined) continue;
+    for (const row of tableRows) stream.push(row);
+  }
+  return Buffer.concat(stream);
 };
 
 interface FixtureMetadataRowContext {

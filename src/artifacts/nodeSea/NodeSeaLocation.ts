@@ -1,6 +1,11 @@
+import { decodeMachoFixedName } from "../../domain/apple/appleMachoNames.js";
+import { hasElfMagic } from "../../domain/binaryContainer.js";
+import { hasDosMzMagic } from "../../domain/dosMz.js";
 import { LC } from "../../domain/apple/machoLoadCommandCodes.js";
 import {
   hashArtifactRange,
+  uniqueArtifactRanges,
+  type ArtifactCarrierRange,
   readArtifactRange as readExact,
 } from "../ArtifactCarrierRange.js";
 import {
@@ -11,13 +16,19 @@ import {
   machoSectionBacking,
   readMachoSectionHeader,
 } from "../../domain/apple/machoSectionHeader.js";
-import { readElfSectionHeader } from "../../domain/elfSectionHeader.js";
-import { readElfProgramHeader } from "../../domain/elfProgramHeader.js";
+import {
+  elfSectionHeaderWidth,
+  readElfSectionHeader,
+} from "../../domain/elfSectionHeader.js";
+import {
+  elfProgramHeaderWidth,
+  readElfProgramHeader,
+} from "../../domain/elfProgramHeader.js";
 import { readElfRawTableDeclarations } from "../../domain/elfRawTableDeclarations.js";
 import { validateElfSectionTableFields } from "../../domain/elfDeclaredRanges.js";
 import { constants as bufferConstants } from "node:buffer";
 import {
-  parsePeResources,
+  readPeResourceEntries,
   peResourceLimitBoundary,
 } from "../../domain/pe/peResourceInventory.js";
 import {
@@ -27,15 +38,17 @@ import {
 import {
   MAX_INSPECT_PE_FILE_BYTES,
   MAX_INSPECT_PE_DIRECTORY_ENTRIES,
-  type PeResources,
 } from "../../domain/native/peResources.js";
 import type { FileHandle } from "node:fs/promises";
 import type { StableRegularFileDescriptor } from "../../filesystem/RegularFile.js";
 
 import {
   ArtifactReaderFailure,
+  malformedArtifact,
+  truncatedArtifact,
   artifactParseFailure,
   artifactReaderLimitFailure,
+  artifactFixedLimitFailure,
   abortIfNeeded,
 } from "../../resources/index.js";
 import { ParseFailureError } from "../../domain/parseFailure.js";
@@ -73,7 +86,6 @@ import {
   observeNodeSeaFuseMatches,
   type NodeSeaFuseObservation,
 } from "./NodeSeaBlob.js";
-import { sha256Hex } from "../../kernel/sha256Hex.js";
 
 const PT_NOTE = 4;
 const RT_RCDATA = 10;
@@ -89,13 +101,8 @@ export interface NodeSeaLocation {
   readonly blobLength: number;
 }
 
-interface BlobRange {
-  readonly offset: number;
-  readonly length: number;
-}
-
 interface MachoSliceScan {
-  readonly ranges: readonly BlobRange[];
+  readonly ranges: readonly ArtifactCarrierRange[];
   readonly identityIssue?: string;
 }
 
@@ -109,7 +116,10 @@ interface Carrier {
 }
 
 const formatFailure = (message: string): ArtifactReaderFailure =>
-  new ArtifactReaderFailure("format", message);
+  malformedArtifact("node-sea", message);
+
+const truncatedFailure = (message: string): ArtifactReaderFailure =>
+  truncatedArtifact("node-sea", message);
 
 const limitFailure = (message: string): ArtifactReaderFailure =>
   new ArtifactReaderFailure("limit", message, { boundary: "memory" });
@@ -157,13 +167,13 @@ export const locateNodeSea = async (
         : await locateFatMachO(carrier, prefix);
     return collapseRanges(carrier, "mach-o", ranges);
   }
-  if (prefix.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])))
+  if (hasElfMagic(prefix))
     return collapseRanges(
       carrier,
       "elf",
       await locateElfNotes(carrier, prefix),
     );
-  if (prefix[0] === 0x4d && prefix[1] === 0x5a)
+  if (hasDosMzMagic(prefix))
     return collapseRanges(
       carrier,
       "pe",
@@ -189,8 +199,24 @@ export const readNodeSeaBlob = async (
     location.blobOffset,
     location.blobLength,
   );
-  if (bytes === undefined) throw formatFailure(NODE_SEA_TRUNCATED);
+  if (bytes === undefined) throw truncatedFailure(NODE_SEA_TRUNCATED);
   return bytes;
+};
+
+const FUSE_PREFIX_BYTES = Buffer.from("NODE_SEA_FUSE_", "ascii");
+
+const isLowerHexByte = (byte: number): boolean =>
+  (byte >= 0x30 && byte <= 0x39) || (byte >= 0x61 && byte <= 0x66);
+
+const isNodeSeaFuseAt = (buffer: Buffer, offset: number): boolean => {
+  if (offset + FUSE_LENGTH > buffer.length) return false;
+  const hashStart = offset + FUSE_PREFIX_BYTES.length;
+  for (let index = 0; index < 32; index += 1) {
+    if (!isLowerHexByte(buffer[hashStart + index]!)) return false;
+  }
+  if (buffer[hashStart + 32] !== 0x3a) return false; // ':'
+  const state = buffer[hashStart + 33];
+  return state === 0x30 || state === 0x31; // '0' | '1'
 };
 
 /**
@@ -202,31 +228,51 @@ export const scanNodeSeaFuse = async (
   fileSize: number,
   signal?: AbortSignal,
 ): Promise<NodeSeaFuseObservation> => {
-  const carrier: Carrier = { handle, fileSize, signal };
   const matches = new Set<string>();
   const overlap = FUSE_LENGTH - 1;
-  let carry: Buffer = Buffer.alloc(0);
+  const chunkSize = 64 * 1024;
+  const scratch = Buffer.allocUnsafe(overlap + chunkSize);
+  let carryLength = 0;
   let position = 0;
   while (position < fileSize) {
-    const length = Math.min(64 * 1024, fileSize - position);
-    const chunk = await readExact(carrier, position, length);
-    if (chunk === undefined)
-      throw new ArtifactReaderFailure(
-        "integrity",
-        "Node SEA carrier shrank during the fuse scan",
-        { integrityCheck: "read-coverage" },
+    const length = Math.min(chunkSize, fileSize - position);
+    let filled = 0;
+    while (filled < length) {
+      abortIfNeeded(signal);
+      const observed = await handle.read(
+        scratch,
+        carryLength + filled,
+        length - filled,
+        position + filled,
       );
-    const window = carry.length === 0 ? chunk : Buffer.concat([carry, chunk]);
-    for (const match of window
-      .toString("latin1")
-      .matchAll(/NODE_SEA_FUSE_[0-9a-f]{32}:[01]/gu))
-      if (match[0] !== undefined) {
-        matches.add(match[0]);
+      abortIfNeeded(signal);
+      if (observed.bytesRead === 0)
+        throw new ArtifactReaderFailure(
+          "integrity",
+          "Node SEA carrier shrank during the fuse scan",
+          { integrityCheck: "read-coverage" },
+        );
+      filled += observed.bytesRead;
+    }
+    const windowLength = carryLength + length;
+    const window = scratch.subarray(0, windowLength);
+    let searchFrom = 0;
+    while (searchFrom <= windowLength - FUSE_LENGTH) {
+      const hit = window.indexOf(FUSE_PREFIX_BYTES, searchFrom);
+      if (hit < 0 || hit > windowLength - FUSE_LENGTH) break;
+      if (isNodeSeaFuseAt(window, hit)) {
+        matches.add(window.toString("ascii", hit, hit + FUSE_LENGTH));
         // Two distinct sentinels already establish conflict. The public fact
         // needs no unbounded set of all sentinel-like strings in asset bytes.
         if (matches.size > 1) return observeNodeSeaFuseMatches([...matches]);
+        searchFrom = hit + FUSE_LENGTH;
+      } else {
+        searchFrom = hit + 1;
       }
-    carry = window.subarray(Math.max(0, window.length - overlap));
+    }
+    carryLength = Math.min(overlap, windowLength);
+    if (carryLength > 0)
+      scratch.copyWithin(0, windowLength - carryLength, windowLength);
     position += length;
   }
   return observeNodeSeaFuseMatches([...matches]);
@@ -235,23 +281,34 @@ export const scanNodeSeaFuse = async (
 const collapseRanges = async (
   carrier: Carrier,
   kind: NodeSeaLocation["carrier"],
-  ranges: readonly BlobRange[],
+  ranges: readonly ArtifactCarrierRange[],
 ): Promise<NodeSeaLocation | undefined> => {
-  const unique: BlobRange[] = [];
-  const seen = new Set<string>();
-  for (const range of ranges) {
-    const key = `${String(range.offset)}:${String(range.length)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(range);
-  }
+  const unique = uniqueArtifactRanges(ranges);
   const chosen = unique[0];
   if (chosen === undefined) return undefined;
   if (unique.length > 1) {
+    if (unique.some((range) => range.length !== chosen.length))
+      throw formatFailure(NODE_SEA_DUPLICATE_BLOB);
+    // Disjoint copies fit in the file; overlapping declarations must not
+    // multiply verification work by the number of native table entries.
+    let remainingBytes = carrier.fileSize;
+    for (const range of unique) {
+      if (range.length > remainingBytes)
+        throw artifactFixedLimitFailure(
+          {
+            name: "Node SEA duplicate-blob verification allowance",
+            kind: "work",
+            limit: carrier.fileSize,
+            unit: "bytes",
+          },
+          "Node SEA duplicate-blob verification exceeds the carrier-byte work allowance.",
+        );
+      remainingBytes -= range.length;
+    }
     const hashes = new Set<string>();
     for (const range of unique) {
       const hash = await hashArtifactRange(carrier, range.offset, range.length);
-      if (hash === undefined) throw formatFailure(NODE_SEA_TRUNCATED);
+      if (hash === undefined) throw truncatedFailure(NODE_SEA_TRUNCATED);
       hashes.add(hash);
     }
     if (hashes.size !== 1) throw formatFailure(NODE_SEA_DUPLICATE_BLOB);
@@ -266,7 +323,7 @@ const collapseRanges = async (
 const locateFatMachO = async (
   carrier: Carrier,
   prefix: Buffer,
-): Promise<readonly BlobRange[]> => {
+): Promise<readonly ArtifactCarrierRange[]> => {
   let bytes = prefix;
   let header = readFatContainerHeader(bytes, carrier.fileSize);
   if (header.state === "needs-data") {
@@ -285,7 +342,7 @@ const locateFatMachO = async (
       return (await locateThinMachO(carrier, 0, carrier.fileSize)).ranges;
     return [];
   }
-  const found: BlobRange[] = [];
+  const found: ArtifactCarrierRange[] = [];
   let identityIssue: string | undefined;
   for (const [index, slice] of header.slices.entries()) {
     if (slice === undefined || header.rangeIssues[index] != null) continue;
@@ -344,7 +401,7 @@ const locateThinMachO = async (
   }
   const commands = await readExact(carrier, base + headerSize, sizeofcmds);
   if (commands === undefined) return EMPTY_MACHO_SLICE;
-  const found: BlobRange[] = [];
+  const found: ArtifactCarrierRange[] = [];
   const cursor = new MachoLoadCommandCursor(framing.value);
   while (cursor.nextOffset !== null) {
     abortIfNeeded(carrier.signal);
@@ -363,7 +420,9 @@ const locateThinMachO = async (
       // and section framing only from the shared fixed-record observation.
       const segment = parsedSegment.ok ? parsedSegment.value : undefined;
       const name =
-        segment === undefined ? undefined : cString(segment.nameBytes, 0, 16);
+        segment === undefined
+          ? undefined
+          : decodeMachoFixedName(segment.nameBytes);
       if (
         segment !== undefined &&
         (name === "NODE_SEA" || name === "__NODE_SEA")
@@ -373,7 +432,7 @@ const locateThinMachO = async (
         const table = offset + segmentHeader;
         if (nsects > Math.floor((size - segmentHeader) / sectionSize)) {
           if (identityIssue !== null) continue;
-          throw formatFailure(NODE_SEA_MACHO_SEGMENT_TRUNCATED);
+          throw truncatedFailure(NODE_SEA_MACHO_SEGMENT_TRUNCATED);
         }
         const admission = admitMachoSegmentCommand(
           segment,
@@ -389,9 +448,9 @@ const locateThinMachO = async (
             little,
           );
           if (!parsedSection.ok)
-            throw formatFailure(NODE_SEA_MACHO_SEGMENT_TRUNCATED);
+            throw truncatedFailure(NODE_SEA_MACHO_SEGMENT_TRUNCATED);
           const record = parsedSection.value;
-          if (cString(record.nameBytes, 0, 16) !== SEA_SECTION) continue;
+          if (decodeMachoFixedName(record.nameBytes) !== SEA_SECTION) continue;
           // Only a named declaration is attributed to SEA. A mismatch
           // cannot supply bytes or block an independently admitted sibling.
           if (identityIssue !== null) return { ranges: [], identityIssue };
@@ -403,7 +462,8 @@ const locateThinMachO = async (
           const fileOffset = record.offset;
           // The segment and section bounds admit every nonempty payload.
           // Empty segments can still declare an offset outside the image.
-          if (fileOffset > sliceSize) throw formatFailure(NODE_SEA_TRUNCATED);
+          if (fileOffset > sliceSize)
+            throw truncatedFailure(NODE_SEA_TRUNCATED);
           const length = Number(record.size);
           admitBlobBytes(carrier, length);
           found.push({ offset: base + fileOffset, length });
@@ -412,18 +472,18 @@ const locateThinMachO = async (
     }
   }
   if (found.length > 0 && !cursor.finish().ok)
-    throw formatFailure(NODE_SEA_MACHO_COMMANDS_TRUNCATED);
+    throw truncatedFailure(NODE_SEA_MACHO_COMMANDS_TRUNCATED);
   return { ranges: found };
 };
 
 const locateElfNotes = async (
   carrier: Carrier,
   prefix: Buffer,
-): Promise<BlobRange[]> => {
+): Promise<ArtifactCarrierRange[]> => {
   const header = readElfFixedHeader(prefix, carrier.fileSize);
   if (!header.ok) return [];
   const little = header.value.byteOrder === "little";
-  const elf64 = header.value.elfClass === 64;
+  const { elfClass } = header.value;
   const fields = await readExact(
     carrier,
     0,
@@ -446,9 +506,7 @@ const locateElfNotes = async (
   const phnum = programDeclarations.count;
   const shentsize = sectionDeclarations.width;
   const shnum = sectionDeclarations.count;
-  const minimumProgram = elf64 ? 56 : 32;
-  const minimumSection = elf64 ? 64 : 40;
-  const found: BlobRange[] = [];
+  const found: ArtifactCarrierRange[] = [];
   let opaque: string | undefined;
   // Each note header takes at least 12 file bytes. The containing program or
   // section header also makes room in this allowance for one short tail read.
@@ -461,7 +519,7 @@ const locateElfNotes = async (
     offset: phoff,
     count: phnum,
     entrySize: phentsize,
-    minimumEntry: minimumProgram,
+    minimumEntry: elfProgramHeaderWidth(elfClass),
   });
   if (programs === undefined && phnum > 0)
     opaque = NODE_SEA_ELF_TABLE_TRUNCATED;
@@ -511,7 +569,7 @@ const locateElfNotes = async (
     offset: shoff,
     count: shnum,
     entrySize: shentsize,
-    minimumEntry: minimumSection,
+    minimumEntry: elfSectionHeaderWidth(elfClass),
   });
   if (sections === undefined && shnum > 0)
     opaque ??= NODE_SEA_ELF_TABLE_TRUNCATED;
@@ -624,7 +682,7 @@ const scanElfNoteTable = async (
   },
   scan: NoteScan,
   alreadyFound: boolean,
-): Promise<BlobRange[] | undefined> => {
+): Promise<ArtifactCarrierRange[] | undefined> => {
   if (
     note.offset === undefined ||
     note.length === undefined ||
@@ -633,7 +691,7 @@ const scanElfNoteTable = async (
   )
     return undefined;
   const alignment = elfNoteAlignment(note.align === 8 ? 8 : 4);
-  const found: BlobRange[] = [];
+  const found: ArtifactCarrierRange[] = [];
   let cursor = 0;
   while (cursor + ELF_NOTE_HEADER_BYTES <= note.length) {
     abortIfNeeded(carrier.signal);
@@ -664,10 +722,11 @@ const scanElfNoteTable = async (
     );
     if (name === undefined)
       return failNoteTable(alreadyFound || found.length > 0);
-    const owner = cString(name, 0, name.length);
+    const nul = name.indexOf(0);
+    const owner = name.toString("latin1", 0, nul < 0 ? name.length : nul);
     if (owner === RESOURCE_NAME) {
       if (framing === "truncated-descriptor")
-        throw formatFailure(NODE_SEA_ELF_DESCRIPTOR_TRUNCATED);
+        throw truncatedFailure(NODE_SEA_ELF_DESCRIPTOR_TRUNCATED);
       admitBlobBytes(carrier, descsz);
       found.push({ offset: note.offset + cursor + descriptor, length: descsz });
     }
@@ -704,7 +763,7 @@ const failNoteTable = (
 const locatePeResources = async (
   carrier: Carrier,
   prefix: Buffer,
-): Promise<BlobRange[]> => {
+): Promise<ArtifactCarrierRange[]> => {
   // Probe for the NODE_SEA_BLOB name first so a malformed resource tree in an
   // ordinary PE stays a native-classification concern, not a SEA failure.
   if (
@@ -724,7 +783,7 @@ const locatePeResources = async (
     );
   }
   const bytes = await readExact(carrier, 0, carrier.fileSize);
-  if (bytes === undefined) throw formatFailure(NODE_SEA_TRUNCATED);
+  if (bytes === undefined) throw truncatedFailure(NODE_SEA_TRUNCATED);
   // A native-looking file need not be an admitted PE image. Once the layout
   // is admitted, resource errors remain failures rather than inferred absence.
   let layout: ReturnType<typeof readPeResourceLayout>;
@@ -735,27 +794,18 @@ const locatePeResources = async (
       return [];
     throw cause;
   }
-  let resources: PeResources;
+  let resources: Awaited<ReturnType<typeof readPeResourceEntries>>;
   try {
-    resources = await parsePeResources(
+    resources = await readPeResourceEntries(
       bytes,
-      {
-        path: "<admitted SEA carrier>",
-        sha256: sha256Hex(bytes),
-        bytes: bytes.length,
-      },
-      {
-        path: "/admitted-sea-carrier",
-        max_file_bytes: MAX_INSPECT_PE_FILE_BYTES,
-        max_entries: MAX_INSPECT_PE_DIRECTORY_ENTRIES,
-      },
-      carrier.signal,
       layout,
+      MAX_INSPECT_PE_DIRECTORY_ENTRIES,
+      carrier.signal,
     );
   } catch (cause) {
     throw artifactParseFailure(cause, carrier.signal, peResourceLimitBoundary);
   }
-  return resources.resources.flatMap((resource) => {
+  return resources.flatMap((resource) => {
     if (
       resource.type.kind !== "id" ||
       resource.type.id !== RT_RCDATA ||
@@ -767,11 +817,4 @@ const locatePeResources = async (
     admitBlobBytes(carrier, range.bytes);
     return [{ offset: range.offset, length: range.bytes }];
   });
-};
-
-const cString = (bytes: Buffer, offset: number, length: number): string => {
-  let end = offset;
-  const limit = Math.min(bytes.length, offset + length);
-  while (end < limit && bytes[end] !== 0) end += 1;
-  return bytes.toString("latin1", offset, end);
 };

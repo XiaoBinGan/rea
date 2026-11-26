@@ -1,22 +1,72 @@
-import { lstat, opendir, readFile, realpath, stat } from "node:fs/promises";
-import { extname, join, sep } from "node:path";
+import { lstat, opendir, realpath, stat } from "node:fs/promises";
+import { basename, extname, join, sep } from "node:path";
 
 import { z } from "zod";
 
+import {
+  AnalysisCancelledError,
+  cancelledBy,
+  carriedReason,
+} from "../domain/analysisErrorCore.js";
+import { analysisErrorWithCancellation } from "../domain/analysisErrorCancellation.js";
 import { isPlistDecodeBudgetFailure } from "../domain/apple/propertyListDecodeBudget.js";
 import { decodeInfoPlistValue } from "../domain/apple/infoPlist.js";
 import { BinaryTargetError } from "../domain/configurationErrors.js";
+import { InternalInvariantError } from "../domain/internalInvariant.js";
+import { decodeLimit, ParseFailureError } from "../domain/parseFailure.js";
 import { isPathWithinRoot } from "../domain/localPath.js";
 import type {
   BundleResourceRoot,
   ResolvedAppBundleResourceRoot,
 } from "../domain/apple/bundleResourceRoot.js";
+import type { BundleExecutableSelection } from "../domain/apple/bundleExecutableProvenance.js";
 import {
   INFO_PLIST_DECODE_MIB,
   openableAppleBundleExtension,
 } from "../domain/apple/appleBundleTypes.js";
 import { err, ok, type Result } from "../domain/result.js";
 import { absoluteCallerPath } from "../filesystem/callerPath.js";
+import { regularFileCancellation } from "../filesystem/OwnedRegularFile.js";
+import type { ArtifactResourceScope } from "../resources/index.js";
+import { errorMessage } from "../kernel/errorMessage.js";
+import { sha256Hex } from "../kernel/sha256Hex.js";
+
+import {
+  bindRegularFileCleanup,
+  readRegularFile,
+  RegularFileReadFailure,
+  RetainedRegularFileCleanupFailure,
+  retryRegularFileCleanup,
+} from "../process/RegularFileRead.js";
+
+/** Match the native plist inspector's input allowance, independent of decoding. */
+const BUNDLE_INFO_PLIST_INPUT_BYTES = 64 * 1024 * 1024;
+
+const bundlePlistCancellation = (reason: unknown): AnalysisCancelledError =>
+  cancelledBy("resolve_binary_target", carriedReason(reason));
+
+export const readBundleInfoPlist = (
+  path: string,
+  signal?: AbortSignal,
+): Promise<Buffer> =>
+  readRegularFile(path, {
+    symlinks: "follow",
+    ...(signal === undefined
+      ? {}
+      : { signal, cancellationFailure: bundlePlistCancellation }),
+    admit: ({ size }) => {
+      if (size > BUNDLE_INFO_PLIST_INPUT_BYTES)
+        throw decodeLimit(
+          "plist",
+          `Info.plist exceeds the ${String(BUNDLE_INFO_PLIST_INPUT_BYTES)}-byte input allowance: ${path} (${String(size)} bytes)`,
+          {
+            name: "bundle Info.plist input bytes",
+            maximum: BUNDLE_INFO_PLIST_INPUT_BYTES,
+            required: size,
+          },
+        );
+    },
+  });
 
 /** Where one app bundle layout keeps its Info.plist and program file. */
 interface BundleLayout {
@@ -73,6 +123,7 @@ const FLATTENED_FRAMEWORK_LAYOUTS: readonly BundleLayout[] = [
 export interface ResolvedAppBundle {
   readonly executable: string;
   readonly infoPlist?: string;
+  readonly bundleExecutableSelection?: BundleExecutableSelection;
 }
 
 /** Filesystem operations used by the resolver, injectable for boundary tests. */
@@ -81,7 +132,11 @@ interface AppBundleFileSystem {
   readonly realpath: (path: string) => Promise<string>;
 }
 
-const defaultFileSystem: AppBundleFileSystem = { readFile, realpath };
+interface AppBundleResolutionOptions {
+  readonly fileSystem?: AppBundleFileSystem;
+  readonly resources?: ArtifactResourceScope;
+  readonly signal?: AbortSignal | undefined;
+}
 
 /**
  * Resolve an app bundle directory to its declared program file. macOS and
@@ -91,12 +146,13 @@ const defaultFileSystem: AppBundleFileSystem = { readFile, realpath };
  */
 const resolveAppBundleExecutable = async (
   path: string,
-  fileSystem: AppBundleFileSystem = defaultFileSystem,
+  fileSystem: AppBundleFileSystem,
+  options: AppBundleResolutionOptions,
 ): Promise<Result<ResolvedAppBundle, BinaryTargetError>> => {
   try {
     const layout = await presentLayout(path);
     if (layout !== undefined)
-      return await resolveLayoutExecutable(path, layout, fileSystem);
+      return await resolveLayoutExecutable(path, layout, fileSystem, options);
     const wrapped = await wrappedBundle(path);
     if (wrapped !== undefined) {
       const wrappedLayout = await presentLayout(wrapped);
@@ -105,9 +161,13 @@ const resolveAppBundleExecutable = async (
           wrapped,
           wrappedLayout,
           fileSystem,
+          options,
         );
     }
   } catch (cause: unknown) {
+    if (cause instanceof AnalysisCancelledError) throw cause;
+    // A broken internal assumption is a REA defect, not a fact about the bundle.
+    if (cause instanceof InternalInvariantError) throw cause;
     if (cause instanceof BinaryTargetError) return err(cause);
     return err(
       new BinaryTargetError(path, errorReason(cause, path), { cause }),
@@ -136,12 +196,17 @@ const resolveAppBundleExecutable = async (
  */
 export const resolveAppleBundleExecutable = async (
   path: string,
-  fileSystem: AppBundleFileSystem = defaultFileSystem,
+  options: AppBundleResolutionOptions = {},
 ): Promise<Result<ResolvedAppBundle, BinaryTargetError>> => {
+  const fileSystem = options.fileSystem ?? {
+    readFile: (plistPath: string) =>
+      readBundleInfoPlist(plistPath, options.signal),
+    realpath,
+  };
   if (extname(path).toLowerCase() === ".app")
-    return resolveAppBundleExecutable(path, fileSystem);
+    return resolveAppBundleExecutable(path, fileSystem, options);
   try {
-    const layout = await declaredBundleLayout(path, fileSystem);
+    const layout = await declaredBundleLayout(path, fileSystem.realpath);
     if (!layout.ok) return layout;
     if (layout.value === undefined)
       return err(
@@ -156,8 +221,16 @@ export const resolveAppleBundleExecutable = async (
           },
         ),
       );
-    return await resolveLayoutExecutable(path, layout.value, fileSystem);
+    return await resolveLayoutExecutable(
+      path,
+      layout.value,
+      fileSystem,
+      options,
+    );
   } catch (cause: unknown) {
+    if (cause instanceof AnalysisCancelledError) throw cause;
+    // A broken internal assumption is a REA defect, not a fact about the bundle.
+    if (cause instanceof InternalInvariantError) throw cause;
     if (cause instanceof BinaryTargetError) return err(cause);
     return err(
       new BinaryTargetError(path, errorReason(cause, path), { cause }),
@@ -182,7 +255,7 @@ const bundleLayouts = async (
  */
 const declaredBundleLayout = async (
   path: string,
-  fileSystem: AppBundleFileSystem,
+  canonicalize: AppBundleFileSystem["realpath"],
 ): Promise<Result<BundleLayout | undefined, BinaryTargetError>> => {
   const layouts = await bundleLayouts(path);
   if (layouts === VERSIONED_FRAMEWORK_LAYOUTS) {
@@ -220,10 +293,7 @@ const declaredBundleLayout = async (
     );
   const plistPath = join(path, ...layout.plist);
   if (
-    !isPathWithinRoot(
-      await fileSystem.realpath(path),
-      await fileSystem.realpath(plistPath),
-    )
+    !isPathWithinRoot(await canonicalize(path), await canonicalize(plistPath))
   )
     return err(
       new BinaryTargetError(path, "bundle Info.plist leaves the bundle", {
@@ -258,10 +328,7 @@ export const findAppBundleResourceRoot = async (
       extension !== ".app" &&
       openableAppleBundleExtension(extension) !== undefined
     ) {
-      const declared = await declaredBundleLayout(
-        canonicalInput,
-        defaultFileSystem,
-      );
+      const declared = await declaredBundleLayout(canonicalInput, realpath);
       if (!declared.ok) return declared;
       // An admitted bundle type without Info.plist is a native admission
       // failure, not an application directory for other routes.
@@ -412,35 +479,126 @@ const wrappedBundle = async (bundle: string): Promise<string | undefined> => {
   return app;
 };
 
+const plistReadFailure = (
+  plistPath: string,
+  noun: string,
+  failure: unknown,
+  signal?: AbortSignal,
+): BinaryTargetError => {
+  const cause =
+    failure instanceof RegularFileReadFailure
+      ? failure.operationCause
+      : failure;
+  const error = new BinaryTargetError(
+    plistPath,
+    cause instanceof ParseFailureError && cause.kind === "limit"
+      ? cause.message
+      : isPermissionDenied(cause)
+        ? `permission denied reading ${noun} Info.plist ${plistPath}`
+        : isAbsence(cause)
+          ? `${noun} Info.plist is missing: ${plistPath}`
+          : `could not read ${noun} Info.plist ${plistPath}${codeDescription(cause)}`,
+    { cause },
+  );
+  if (signal?.aborted === true)
+    analysisErrorWithCancellation(
+      error,
+      bundlePlistCancellation(signal.reason),
+    );
+  return error;
+};
+
+const readLayoutPlist = async (
+  path: string,
+  noun: string,
+  read: AppBundleFileSystem["readFile"],
+  { resources, signal }: AppBundleResolutionOptions,
+): Promise<Result<Buffer, BinaryTargetError>> => {
+  try {
+    return ok(await read(path));
+  } catch (cause: unknown) {
+    if (cause instanceof AnalysisCancelledError) throw cause;
+    if (!(cause instanceof RetainedRegularFileCleanupFailure))
+      return err(plistReadFailure(path, noun, cause, signal));
+
+    // The target resolver already tracks this operation. Retry only the owned
+    // descriptor, since re-entering scope admission could wait on this read.
+    const failure = cause as RetainedRegularFileCleanupFailure<Buffer>;
+    const retry =
+      resources === undefined
+        ? undefined
+        : await retryRegularFileCleanup(failure, resources, signal);
+    const { outcome } = failure;
+    const cancellation =
+      regularFileCancellation(failure) ??
+      (outcome.kind === "completed" && signal?.aborted === true
+        ? { reason: signal.reason }
+        : undefined);
+    if (retry !== undefined && retry.failure === undefined) {
+      if (cancellation !== undefined)
+        throw bundlePlistCancellation(cancellation.reason);
+      return outcome.kind === "completed"
+        ? ok(outcome.value)
+        : err(
+            plistReadFailure(
+              path,
+              noun,
+              failure.operationFailure ?? outcome.cause,
+              signal,
+            ),
+          );
+    }
+
+    const primary =
+      failure.operationFailure !== undefined
+        ? plistReadFailure(path, noun, failure.operationFailure, signal)
+        : cancellation !== undefined
+          ? bundlePlistCancellation(cancellation.reason)
+          : outcome.kind === "failed"
+            ? plistReadFailure(path, noun, outcome.cause, signal)
+            : undefined;
+    const retained = retry?.failure ?? failure;
+    const error = new BinaryTargetError(
+      path,
+      "The Info.plist file handle could not be closed",
+      {
+        cause: retained,
+        cleanupPrimary: primary,
+        cleanup: retry?.cleanup ?? {
+          reason: errorMessage(failure.cleanupCause),
+          resources: [failure.path],
+        },
+      },
+    );
+    bindRegularFileCleanup(retained, error);
+    return err(error);
+  }
+};
+
 const resolveLayoutExecutable = async (
   bundle: string,
   layout: BundleLayout,
   fileSystem: AppBundleFileSystem,
+  options: AppBundleResolutionOptions,
 ): Promise<Result<ResolvedAppBundle, BinaryTargetError>> => {
   const plistPath = join(bundle, ...layout.plist);
   // Reasons for an app keep their established wording.
   const noun = extname(bundle).toLowerCase() === ".app" ? "app" : "bundle";
-  let plist: Buffer;
-  try {
-    plist = await fileSystem.readFile(plistPath);
-  } catch (cause: unknown) {
-    return err(
-      new BinaryTargetError(
-        plistPath,
-        isPermissionDenied(cause)
-          ? `permission denied reading ${noun} Info.plist ${plistPath}`
-          : isAbsence(cause)
-            ? `${noun} Info.plist is missing: ${plistPath}`
-            : `could not read ${noun} Info.plist ${plistPath}${codeDescription(cause)}`,
-        { cause },
-      ),
-    );
-  }
+  const plist = await readLayoutPlist(
+    plistPath,
+    noun,
+    fileSystem.readFile,
+    options,
+  );
+  if (!plist.ok) return plist;
 
   let name: string;
   try {
-    name = executableName(decodeInfoPlistValue(plist, ["CFBundleExecutable"]));
+    name = executableName(
+      decodeInfoPlistValue(plist.value, ["CFBundleExecutable"]),
+    );
   } catch (cause: unknown) {
+    if (cause instanceof InternalInvariantError) throw cause;
     if (isPlistDecodeBudgetFailure(cause))
       return err(
         new BinaryTargetError(
@@ -504,7 +662,32 @@ const resolveLayoutExecutable = async (
           { constraint: "bundle_path_escapes", probedPaths: [executable] },
         ),
       );
-    return ok({ executable: canonicalExecutable, infoPlist: plistPath });
+    const extension = extname(canonicalBundle);
+    const frameworkName =
+      extension.toLowerCase() === ".framework"
+        ? basename(canonicalBundle, extension)
+        : undefined;
+    return ok({
+      executable: canonicalExecutable,
+      infoPlist: plistPath,
+      bundleExecutableSelection: {
+        canonical_path: canonicalBundle,
+        layout: layout.name,
+        info_plist_sha256: sha256Hex(plist.value),
+        declared_executable: name,
+        ...(layout.name === "versioned-framework"
+          ? { version_directory: canonicalPrograms }
+          : {}),
+        ...(frameworkName === undefined
+          ? {}
+          : {
+              framework: {
+                directory_name: frameworkName,
+                matches_declared_executable: frameworkName === name,
+              },
+            }),
+      },
+    });
   } catch (cause: unknown) {
     return err(
       new BinaryTargetError(
