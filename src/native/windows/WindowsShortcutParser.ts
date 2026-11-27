@@ -283,6 +283,13 @@ const extensionOf = (
     : designatorFree;
   const slash = normalized.lastIndexOf("\\");
   const name = slash === -1 ? normalized : normalized.slice(slash + 1);
+  // An unexpanded variable leaves the normalization mode unknown: the same text
+  // opens through Win32, which strips a trailing space, or through a `\\?\` verbatim
+  // path, which keeps it. A trailing space therefore names no known extension.
+  // An unexpanded variable leaves the normalization mode unknown: the same text
+  // opens through Win32, which strips a trailing space, or through a `\\?\` verbatim
+  // path, which keeps it. A trailing space therefore names no known extension.
+  if (hasUnexpandedVariable(path) && name.endsWith(" ")) return null;
   const dot = name.lastIndexOf(".");
   if (dot <= 0 || dot === name.length - 1) return null;
   const extension = name.slice(dot);

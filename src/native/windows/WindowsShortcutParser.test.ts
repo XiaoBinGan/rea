@@ -1858,3 +1858,27 @@ it("reads no extension from a hidden name or a hierarchical one-letter URI", asy
   expect(await extensionFor("x://example.test/launcher.exe.")).toBeNull();
   expect(await extensionFor("C:\\Tools\\app.exe.")).toBe(".exe");
 });
+
+/**
+ * An unexpanded variable may expand to a verbatim `\\?\` path, so a trailing space
+ * names no known extension: Win32 would strip it, a verbatim path would keep it.
+ */
+it("keeps a variable-dependent trailing space unknown", async () => {
+  const extensionFor = async (relativePath: string) => {
+    const report = await parse(
+      windowsShortcutBytes({
+        linkInfo: null,
+        relativePath,
+        idList: null,
+        iconLocation: "",
+      }),
+    );
+    const found = report.observations.find(
+      ({ kind }) => kind === "target_extension",
+    );
+    return found?.kind === "target_extension" ? found.extension : undefined;
+  };
+  expect(await extensionFor("%ROOT%\\app.exe ")).toBeNull();
+  // A literal path with no variable still opens through Win32, which strips it.
+  expect(await extensionFor("C:\\Tools\\app.exe ")).toBe(".exe");
+});
