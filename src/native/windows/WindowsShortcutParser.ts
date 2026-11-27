@@ -337,9 +337,12 @@ const normalizePath = (path: string): string => {
  * A URL with an explicit scheme is not one, so its trailing dot stays meaningful.
  */
 const isWin32PathText = (path: string): boolean =>
-  // An explicit scheme names a URL. Text starting `//` is either a
-  // scheme-relative URL or a forward-slash UNC path, and the bytes carry nothing
-  // that separates them, so its name is left as written rather than trimmed.
+  // A single letter and a colon is a drive, so `C://Tools/app.exe.` keeps Win32
+  // name trimming even though its prefix also spells a scheme.
+  /^[a-z]:/iu.test(path) ||
+  // Otherwise an explicit scheme names a URL. Text starting `//` is either that
+  // or a forward-slash UNC path, and the bytes carry nothing that separates them,
+  // so its name is left as written rather than trimmed.
   !/^(?:[a-z][a-z0-9+.-]*:)?\/\//iu.test(path);
 
 /** A drive or UNC path. Filenames, relative paths, and `%VAR%` forms name no fixed location. */

@@ -1736,3 +1736,24 @@ it("leaves a scheme-relative target's name as written", async () => {
   // Without a trailing period the stored name still yields its extension.
   expect(await extensionFor("//example.test/app.exe")).toBe(".exe");
 });
+
+/**
+ * A single letter and a colon is a drive, not a scheme, so a forward-slash drive
+ * path keeps the Win32 name pass that a URL correctly skips.
+ */
+it("keeps the extension of a forward-slash drive path", async () => {
+  const report = await parse(
+    windowsShortcutBytes({
+      linkInfo: null,
+      relativePath: "C://Tools/app.exe.",
+      idList: null,
+      iconLocation: "",
+    }),
+  );
+  const found = report.observations.find(
+    ({ kind }) => kind === "target_extension",
+  );
+  expect(found?.kind === "target_extension" ? found.extension : undefined).toBe(
+    ".exe",
+  );
+});
