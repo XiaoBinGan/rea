@@ -1927,3 +1927,25 @@ it("detects a variable name that contains a separator", async () => {
     null,
   );
 });
+
+/**
+ * A device prefix fixes the normalization mode no matter what the variable
+ * expands to, so the stored name is read as written rather than left unknown.
+ */
+it("reads a name under an explicit device prefix", async () => {
+  const report = await parse(
+    windowsShortcutBytes({
+      linkInfo: null,
+      relativePath: "\\\\?\\C:\\%DIR%\\app.exe ",
+      idList: null,
+      iconLocation: "",
+    }),
+  );
+  const found = report.observations.find(
+    ({ kind }) => kind === "target_extension",
+  );
+  // Verbatim storage keeps the trailing space as part of the name.
+  expect(found?.kind === "target_extension" ? found.extension : undefined).toBe(
+    ".exe ",
+  );
+});
