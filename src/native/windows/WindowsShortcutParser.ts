@@ -275,13 +275,12 @@ const extensionOf = (
   // there does a trailing period or space leave the extension unchanged. A URL
   // recorded in the same field keeps its own trailing dot.
   const folded = path.replaceAll("/", "\\");
-  // A drive designator names no file, so `C:.profile` holds the name `.profile`,
-  // whose leading dot means no extension.
-  // A drive designator names no file, so `C:.profile` holds the name `.profile`,
-  // whose leading dot means no extension.
+  // A designator names no file, so it never belongs to the name: `C:.profile`
+  // holds `.profile`, and a one-letter URI keeps its resource text after the scheme.
+  const designatorFree = folded.replace(/^[a-z]:/iu, "");
   const normalized = win32Names
-    ? fileNameSegment(folded).replace(/^[a-z]:/iu, "")
-    : folded;
+    ? fileNameSegment(designatorFree)
+    : designatorFree;
   const slash = normalized.lastIndexOf("\\");
   const name = slash === -1 ? normalized : normalized.slice(slash + 1);
   const dot = name.lastIndexOf(".");
@@ -342,9 +341,9 @@ const normalizePath = (path: string): string => {
  * A URL with an explicit scheme is not one, so its trailing dot stays meaningful.
  */
 const isWin32PathText = (path: string): boolean => {
-  // A drive designator followed by a separator names a path Win32 opens, so its
-  // name takes the Win32 pass.
-  if (/^[a-z]:[\\/]/iu.test(path)) return true;
+  // Only a backslash after the designator is unambiguously a path; `x://host/...`
+  // spells the same as a custom URI, so it stays ambiguous below.
+  if (/^[a-z]:\\/iu.test(path)) return true;
   // Any other `scheme:` form is either a URI, whose final period is resource data,
   // or a drive-relative path; the stored text does not separate the two, so the
   // name is left as written instead of trimmed.

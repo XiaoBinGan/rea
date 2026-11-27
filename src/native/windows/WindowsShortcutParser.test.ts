@@ -1741,7 +1741,7 @@ it("leaves a scheme-relative target's name as written", async () => {
  * A single letter and a colon is a drive, not a scheme, so a forward-slash drive
  * path keeps the Win32 name pass that a URL correctly skips.
  */
-it("keeps the extension of a forward-slash drive path", async () => {
+it("leaves a forward-slash drive path name unknown", async () => {
   const report = await parse(
     windowsShortcutBytes({
       linkInfo: null,
@@ -1753,9 +1753,11 @@ it("keeps the extension of a forward-slash drive path", async () => {
   const found = report.observations.find(
     ({ kind }) => kind === "target_extension",
   );
-  expect(found?.kind === "target_extension" ? found.extension : undefined).toBe(
-    ".exe",
-  );
+  // A forward slash after the designator spells the same as a custom URI, so the
+  // name stays unknown rather than being trimmed on a guess.
+  expect(
+    found?.kind === "target_extension" ? found.extension : undefined,
+  ).toBeNull();
 });
 
 /**
@@ -1831,4 +1833,28 @@ it("leaves a one-letter scheme ambiguous rather than trimming it", async () => {
   expect(await extensionFor("x:launcher.exe.")).toBeNull();
   // A designator followed by a separator is unambiguously a drive path.
   expect(await extensionFor("X:\\Tools\\app.exe.")).toBe(".exe");
+});
+
+/**
+ * A designator never belongs to the name, in either branch: `C:.profile` holds
+ * `.profile`, and a hierarchical one-letter URI keeps its resource text.
+ */
+it("reads no extension from a hidden name or a hierarchical one-letter URI", async () => {
+  const extensionFor = async (relativePath: string) => {
+    const report = await parse(
+      windowsShortcutBytes({
+        linkInfo: null,
+        relativePath,
+        idList: null,
+        iconLocation: "",
+      }),
+    );
+    const found = report.observations.find(
+      ({ kind }) => kind === "target_extension",
+    );
+    return found?.kind === "target_extension" ? found.extension : undefined;
+  };
+  expect(await extensionFor("C:.profile")).toBeNull();
+  expect(await extensionFor("x://example.test/launcher.exe.")).toBeNull();
+  expect(await extensionFor("C:\\Tools\\app.exe.")).toBe(".exe");
 });
