@@ -1757,3 +1757,28 @@ it("keeps the extension of a forward-slash drive path", async () => {
     ".exe",
   );
 });
+
+/**
+ * A scheme without `//` still names a URI, so its final period is URI data rather
+ * than a Win32 trailing period. Only a single-letter drive keeps the name pass.
+ */
+it("leaves a scheme-only URI's name as written", async () => {
+  const extensionFor = async (relativePath: string) => {
+    const report = await parse(
+      windowsShortcutBytes({
+        linkInfo: null,
+        relativePath,
+        idList: null,
+        iconLocation: "",
+      }),
+    );
+    const found = report.observations.find(
+      ({ kind }) => kind === "target_extension",
+    );
+    return found?.kind === "target_extension" ? found.extension : undefined;
+  };
+  expect(await extensionFor("mailto:launcher.exe.")).toBeNull();
+  expect(await extensionFor("https:example.test/app.exe.")).toBeNull();
+  // The drive arm still opens the name through Win32.
+  expect(await extensionFor("C:\\Tools\\app.exe.")).toBe(".exe");
+});
