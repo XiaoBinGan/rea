@@ -535,9 +535,11 @@ const targetPaths = (
       .reverse()
       .find((item) => item.kind === "file_entry");
     // Type bit 0x04 marks a UTF-16LE name; otherwise the name is ANSI.
+    // A shell item carries a namespace identity rather than path text Win32 opens,
+    // so its name is never trimmed: `app.exe.` stays as written.
     if (lastFile?.kind === "file_entry")
       values.push(
-        recorded(lastFile.short_name, (lastFile.type_byte & 0x04) === 0),
+        recorded(lastFile.short_name, (lastFile.type_byte & 0x04) === 0, false),
       );
   }
   // A stored literal target, never expanded: `%VAR%` text stays as written.
