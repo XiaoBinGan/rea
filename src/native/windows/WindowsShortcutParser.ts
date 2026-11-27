@@ -274,9 +274,14 @@ const extensionOf = (
   // Only a source with Win32 path semantics opens the name through Win32, so only
   // there does a trailing period or space leave the extension unchanged. A URL
   // recorded in the same field keeps its own trailing dot.
+  const folded = path.replaceAll("/", "\\");
+  // A drive designator names no file, so `C:.profile` holds the name `.profile`,
+  // whose leading dot means no extension.
+  // A drive designator names no file, so `C:.profile` holds the name `.profile`,
+  // whose leading dot means no extension.
   const normalized = win32Names
-    ? fileNameSegment(path.replaceAll("/", "\\"))
-    : path.replaceAll("/", "\\");
+    ? fileNameSegment(folded).replace(/^[a-z]:/iu, "")
+    : folded;
   const slash = normalized.lastIndexOf("\\");
   const name = slash === -1 ? normalized : normalized.slice(slash + 1);
   const dot = name.lastIndexOf(".");

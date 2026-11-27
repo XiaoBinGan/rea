@@ -1782,3 +1782,29 @@ it("leaves a scheme-only URI's name as written", async () => {
   // The drive arm still opens the name through Win32.
   expect(await extensionFor("C:\\Tools\\app.exe.")).toBe(".exe");
 });
+
+/**
+ * A drive designator names no file, so a drive-relative hidden name has no
+ * extension: Win32's final segment is `.profile`, and a leading dot names none.
+ */
+it("reads no extension from a drive-relative hidden name", async () => {
+  const extensionFor = async (relativePath: string) => {
+    const report = await parse(
+      windowsShortcutBytes({
+        linkInfo: null,
+        relativePath,
+        idList: null,
+        iconLocation: "",
+      }),
+    );
+    const found = report.observations.find(
+      ({ kind }) => kind === "target_extension",
+    );
+    return found?.kind === "target_extension" ? found.extension : undefined;
+  };
+  expect(await extensionFor("C:.profile.")).toBeNull();
+  expect(await extensionFor("C:\\.profile.")).toBeNull();
+  expect(await extensionFor(".profile.")).toBeNull();
+  // A named file under the same drive still yields its extension.
+  expect(await extensionFor("C:\\Tools\\app.exe.")).toBe(".exe");
+});
