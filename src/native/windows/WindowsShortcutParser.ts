@@ -277,7 +277,7 @@ const extensionOf = (
   const folded = path.replaceAll("/", "\\");
   // A designator names no file, so it never belongs to the name: `C:.profile`
   // holds `.profile`, and a one-letter URI keeps its resource text after the scheme.
-  const designatorFree = folded.replace(/^[a-z]:/iu, "");
+  const designatorFree = folded.replace(/^[A-Za-z]:/u, "");
   const normalized = win32Names
     ? fileNameSegment(designatorFree)
     : designatorFree;
@@ -325,7 +325,7 @@ const normalizePath = (path: string): string => {
   const folded = foldPath(path);
   if (DEVICE_PATH.test(folded)) return folded;
   const unc = folded.startsWith("\\\\");
-  if (!unc && !/^[a-z]:\\/u.test(folded)) return folded;
+  if (!unc && !/^[A-Za-z]:\\/u.test(folded)) return folded;
   // Empty parts drop out first, so `\\server\\share` keeps its share in the root.
   const parts = folded
     .slice(unc ? 2 : 0)
@@ -350,11 +350,14 @@ const normalizePath = (path: string): string => {
 const isWin32PathText = (path: string): boolean => {
   // Only a backslash after the designator is unambiguously a path; `x://host/...`
   // spells the same as a custom URI, so it stays ambiguous below.
-  if (/^[a-z]:\\/iu.test(path)) return true;
+  if (/^[A-Za-z]:\\/u.test(path)) return true;
+  // `K:` is shaped like a drive designator but starts with a non-ASCII letter, so
+  // neither a drive nor an ASCII scheme names it: leave the name as written.
+  if (/^.:[\\/]/u.test(path)) return false;
   // Any other `scheme:` form is either a URI, whose final period is resource data,
   // or a drive-relative path; the stored text does not separate the two, so the
   // name is left as written instead of trimmed.
-  if (/^[a-z][a-z0-9+.-]*:/iu.test(path)) return false;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(path)) return false;
   // Text starting `//` is either a scheme-relative URL or a forward-slash UNC
   // path, and the bytes carry nothing that separates them either.
   return !path.startsWith("//");
@@ -362,11 +365,10 @@ const isWin32PathText = (path: string): boolean => {
 
 /** A drive or UNC path. Filenames, relative paths, and `%VAR%` forms name no fixed location. */
 const isFullPath = (path: string): boolean =>
-  /^(?:[a-z]:\\|\\\\)/u.test(foldPath(path));
+  /^(?:[A-Za-z]:\\|\\\\)/u.test(foldPath(path));
 
 /** An unexpanded `%VAR%` reference: the host is never consulted, so the path stays unresolved. */
-const hasUnexpandedVariable = (path: string): boolean =>
-  /%[^%\\/]+%/u.test(path);
+const hasUnexpandedVariable = (path: string): boolean => /%[^%]+%/u.test(path);
 
 /**
  * A recorded path and where its text came from. All-ASCII strings agree across

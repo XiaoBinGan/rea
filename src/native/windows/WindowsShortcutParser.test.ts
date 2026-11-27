@@ -1882,3 +1882,48 @@ it("keeps a variable-dependent trailing space unknown", async () => {
   // A literal path with no variable still opens through Win32, which strips it.
   expect(await extensionFor("C:\\Tools\\app.exe ")).toBe(".exe");
 });
+
+/**
+ * Only ASCII letters name a drive or a scheme: Unicode case folding maps the
+ * Kelvin sign onto `k`, so `iu` would read `\u212A:` as a drive designator.
+ */
+it("does not read a Kelvin sign as a drive letter", async () => {
+  const report = await parse(
+    windowsShortcutBytes({
+      linkInfo: null,
+      relativePath: "\u212a:\\Tools\\app.exe.",
+      idList: null,
+      iconLocation: "",
+    }),
+  );
+  const found = report.observations.find(
+    ({ kind }) => kind === "target_extension",
+  );
+  // No drive designator, and `\u212a:` is not an ASCII scheme, so the name is
+  // trimmed as a plain relative path only if it carried no prefix; it does, so
+  // the stored text stands and the terminal period names no extension.
+  expect(found?.kind === "target_extension" ? found.extension : undefined).toBe(
+    null,
+  );
+});
+
+/**
+ * A Windows variable name may contain a path separator, so `%A/B%` is one
+ * unexpanded reference rather than literal text.
+ */
+it("detects a variable name that contains a separator", async () => {
+  const report = await parse(
+    windowsShortcutBytes({
+      linkInfo: null,
+      relativePath: "%A/B%\\app.exe.",
+      idList: null,
+      iconLocation: "",
+    }),
+  );
+  const found = report.observations.find(
+    ({ kind }) => kind === "target_extension",
+  );
+  expect(found?.kind === "target_extension" ? found.extension : undefined).toBe(
+    null,
+  );
+});
